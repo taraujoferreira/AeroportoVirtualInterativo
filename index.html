@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="pt">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Aeroporto VR — Wayfinding</title>
+
+    <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+
+<script>
+      // Componente para o texto estar sempre virado para o utilizador
+      AFRAME.registerComponent("face-camera", {
+        tick: function () {
+          const cam = document.getElementById("cam");
+          if (!cam) return;
+          const camPos = cam.object3D.getWorldPosition(new THREE.Vector3());
+          this.el.object3D.lookAt(camPos);
+          this.el.object3D.rotation.x = 0;
+          this.el.object3D.rotation.z = 0;
+        },
+      });
+
+      AFRAME.registerComponent("wayfinding", {
+        init: function () {
+          this.state = { targetGate: null, reached: false };
+
+          this.el.sceneEl.addEventListener("loaded", () => {
+            this.hudTarget = document.getElementById("hudTarget");
+            this.nextText = document.getElementById("nextText");
+            this.cam = document.getElementById("cam");
+            this.navArrow = document.getElementById("navArrow");
+            this.marker = document.getElementById("targetMarker");
+            this.gateSignText = document.getElementById("gateSignText");
+            
+            // Referência para o som de sucesso
+            this.successSound = document.getElementById("soundSuccess");
+
+            this.gates = {
+              A1: document.getElementById("gateA1"),
+              A2: document.getElementById("gateA2"),
+              A3: document.getElementById("gateA3"),
+            };
+
+            this.gateTargets = Array.from(document.querySelectorAll(".gateTarget"));
+
+            document.querySelectorAll(".gateBtn").forEach((btn) => {
+              btn.addEventListener("click", () => {
+                const gate = btn.getAttribute("data-gate");
+                this.setTargetGate(gate);
+                // Feedback visual ao clicar (opcional: som de clique aqui também ficaria bem)
+              });
+              btn.addEventListener("mouseenter", () => btn.object3D.scale.set(1.06, 1.06, 1.06));
+              btn.addEventListener("mouseleave", () => btn.object3D.scale.set(1, 1, 1));
+            });
+
+            if (this.nextText) this.nextText.setAttribute("value", "NEXT: (seleciona um Gate)");
+          });
+        },
+
+        setTargetGate: function (gate) {
+          this.state.targetGate = gate;
+          this.state.reached = false;
+
+          if (this.nextText) this.nextText.setAttribute("value", `NEXT: Gate ${gate}  →  Segurança  →  Gates`);
+          if (this.hudTarget) this.hudTarget.textContent = `Objetivo: ir para o Gate ${gate}. Segue a sinalética.`;
+          if (this.gateSignText) this.gateSignText.setAttribute("value", `Gate ${gate}  →`);
+
+          const gateEl = this.gates?.[gate];
+          if (!gateEl) return;
+
+          const p = gateEl.object3D.getWorldPosition(new THREE.Vector3());
+
+          if (this.marker) {
+            this.marker.setAttribute("position", `${p.x} 2.9 ${p.z}`);
+            this.marker.setAttribute("visible", "true");
+          }
+
+          if (this.navArrow) {
+            const aPos = this.navArrow.object3D.getWorldPosition(new THREE.Vector3());
+            const dx = p.x - aPos.x;
+            const dz = p.z - aPos.z;
+            const yaw = Math.atan2(dx, dz);
+            this.navArrow.object3D.rotation.set(0, yaw, 0);
+            this.navArrow.setAttribute("visible", "true"); // Garantir que a seta aparece
+          }
+        },
+
+        tick: function () {
+          if (!this.state.targetGate || this.state.reached) return;
+          if (!this.cam || !this.gateTargets) return;
+
+          const camPos = this.cam.object3D.getWorldPosition(new THREE.Vector3());
+
+          for (const t of this.gateTargets) {
+            const gate = t.getAttribute("data-gate");
+            if (gate !== this.state.targetGate) continue;
+
+            const tPos = t.object3D.getWorldPosition(new THREE.Vector3());
+            const dx = camPos.x - tPos.x;
+            const dz = camPos.z - tPos.z;
+            const d = Math.sqrt(dx * dx + dz * dz);
+
+            if (d < 2.0) {
+              this.state.reached = true;
+
+              if (this.marker) this.marker.setAttribute("visible", "false");
+              if (this.navArrow) this.navArrow.setAttribute("visible", "false"); // Esconder seta
+              
+              if (this.hudTarget) this.hudTarget.textContent = `✅ Chegaste ao Gate ${gate}.`;
+              if (this.nextText) this.nextText.setAttribute("value", "NEXT: (seleciona outro Gate no Check-in)");
+              if (this.gateSignText) this.gateSignText.setAttribute("value", `✅ Gate ${gate} (chegaste)`);
+
+              // Tocar som de sucesso!
+              if (this.successSound) {
+                this.successSound.components.sound.playSound();
+              }
+            }
+          }
+        },
+      });
+    </script>
+
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; }
+      #hud {
+        position: fixed;
+        left: 12px;
+        top: 12px;
+        z-index: 10;
+        background: rgba(0,0,0,.6);
+        color: #fff;
+        padding: 10px 12px;
+        border-radius: 12px;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;
+        font-size: 14px;
+        max-width: 360px;
+        line-height: 1.35;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="hud">
+      <b>Aeroporto VR — Wayfinding</b><br />
+      WASD • Rato<br />
+      <span id="hudTarget">Escolhe um Gate no painel do Check-in.</span>
+    </div>
+
+    <a-scene wayfinding>
+      <a-assets>
+
+        <a-asset-item id="modelo-balcao" src="airport_check_in_desk.glb"></a-asset-item>
+
+        <img id="skyTexture" src="https://cdn.aframe.io/360-image-gallery-boilerplate/img/city.jpg">
+        
+        <audio id="airportAmbience" src="https://cdn.pixabay.com/download/audio/2022/03/24/audio_3079b47e40.mp3" preload="auto"></audio>
+        
+        <audio id="successClip" src="https://cdn.pixabay.com/download/audio/2021/08/04/audio_0625c153e1.mp3" preload="auto"></audio>
+      </a-assets>
+
+      <a-sky src="#skyTexture" rotation="0 -130 0"></a-sky>
+
+      <a-entity sound="src: #airportAmbience; autoplay: true; loop: true; volume: 0.5"></a-entity>
+
+      <a-entity id="soundSuccess" sound="src: #successClip; volume: 1.0; poolSize: 5"></a-entity>
+
+      <a-entity light="type: ambient; intensity: 0.85"></a-entity>
+      <a-entity light="type: directional; intensity: 0.75" position="1 3 2"></a-entity>
+
+      <!-- Luz -->
+      <a-entity light="type: ambient; intensity: 0.85"></a-entity>
+      <a-entity light="type: directional; intensity: 0.75" position="1 3 2"></a-entity>
+
+      <!-- FPS NORMAL -->
+      <a-entity id="player" position="0 0 8">
+        <a-camera
+          id="cam"
+          position="0 1.6 0"
+          wasd-controls="acceleration: 35"
+          look-controls="pointerLockEnabled: true; mouseSensitivity: 0.06"
+        >
+          <a-cursor raycaster="objects: .clickable" fuse="false" material="color: white; shader: flat"></a-cursor>
+          <a-ring position="0 0 -1" radius-inner="0.01" radius-outer="0.015" color="#fff"></a-ring>
+        </a-camera>
+      </a-entity>
+
+      <!-- Chão + paredes -->
+      <a-plane position="0 0 0" rotation="-90 0 0" width="16" height="30" color="#d9d9d9"></a-plane>
+      <a-box position="-7 1 -5" width="0.5" height="2.5" depth="28" color="#bdbdbd"></a-box>
+      <a-box position="7 1 -5" width="0.5" height="2.5" depth="28" color="#bdbdbd"></a-box>
+
+      <!-- ✅ SINALÉTICA SUSPENSA FIXA -->
+      <a-entity position="0 3.2 9">
+        <a-box width="4.8" height="0.9" depth="0.12" color="#1b4f72"></a-box>
+        <a-text value="CHECK-IN  →" align="center" position="0 0 0.08" width="7" color="#fff"></a-text>
+        <a-cylinder position="-2.0 0.7 0" radius="0.03" height="1.4" color="#666"></a-cylinder>
+        <a-cylinder position="2.0 0.7 0" radius="0.03" height="1.4" color="#666"></a-cylinder>
+      </a-entity>
+
+      <a-entity id="security-area" position="0 0 1">
+        
+        <a-box position="0 0.02 0" width="2" height="0.05" depth="3" color="#333"></a-box>
+        <a-box position="0 0.03 0" width="1.6" height="0.05" depth="3" color="#2c3e50"></a-box>
+
+        <a-box position="-1.2 1.5 0" width="0.4" height="3" depth="0.5" color="#7f8c8d"></a-box>
+        <a-box position="1.2 1.5 0" width="0.4" height="3" depth="0.5" color="#7f8c8d"></a-box>
+        <a-box position="0 2.8 0" width="2.8" height="0.4" depth="0.5" color="#7f8c8d"></a-box>
+
+        <a-sphere position="0 2.5 0" radius="0.15" color="green"
+                  animation="property: material.opacity; from: 1; to: 0.2; dur: 1000; loop: true; dir: alternate">
+        </a-sphere>
+
+        <a-cylinder position="-2 0.5 1.5" radius="0.05" height="1" color="silver"></a-cylinder>
+        <a-cylinder position="-2 0.5 -1.5" radius="0.05" height="1" color="silver"></a-cylinder>
+        <a-box position="-2 0.9 0" width="0.05" height="0.1" depth="3" color="#c0392b"></a-box>
+
+        <a-cylinder position="2 0.5 1.5" radius="0.05" height="1" color="silver"></a-cylinder>
+        <a-cylinder position="2 0.5 -1.5" radius="0.05" height="1" color="silver"></a-cylinder>
+        <a-box position="2 0.9 0" width="0.05" height="0.1" depth="3" color="#c0392b"></a-box>
+
+      </a-entity>
+
+      <a-entity position="0 3.2 -8">
+        <a-box width="4.8" height="0.9" depth="0.12" color="#7d6608"></a-box>
+        <a-text value="GATES  →" align="center" position="0 0 0.08" width="7" color="#fff"></a-text>
+        <a-cylinder position="-2.0 0.7 0" radius="0.03" height="1.4" color="#666"></a-cylinder>
+        <a-cylinder position="2.0 0.7 0" radius="0.03" height="1.4" color="#666"></a-cylinder>
+      </a-entity>
+
+      <!-- ✅ SINALÉTICA SUSPENSA DINÂMICA (FIXA) -->
+      <a-entity id="gateSign" position="0 4.3 -8">
+        <a-box width="5.2" height="0.95" depth="0.12" color="#111"></a-box>
+        <a-text id="gateSignText" value="Escolhe um Gate →" align="center" position="0 0 0.08" width="7" color="#fff"></a-text>
+        <a-cylinder position="-2.0 0.7 0" radius="0.03" height="1.4" color="#666"></a-cylinder>
+        <a-cylinder position="2.0 0.7 0" radius="0.03" height="1.4" color="#666"></a-cylinder>
+      </a-entity>
+
+      <!-- CHECK-IN -->
+        <a-entity gltf-model="#modelo-balcao" 
+                position="-3.526 0 10" 
+                scale="0.5 0.5 0.5" 
+                rotation="0 270 0">
+        </a-entity>
+
+        <a-entity gltf-model="#modelo-balcao" 
+                position="0 0 10" 
+                scale="0.5 0.5 0.5" 
+                rotation="0 270 0">
+        </a-entity>
+
+        <a-entity gltf-model="#modelo-balcao" 
+                position="3.473 0 10" 
+                scale="0.5 0.5 0.5" 
+                rotation="0 270 0">
+        </a-entity>
+
+      <!-- Painel de seleção -->
+      <a-entity id="gatePanel" position="0 1.5 7.5">
+        <a-plane width="6.2" height="2.2" color="#111" opacity="0.65"></a-plane>
+        <a-text value="Escolhe o teu Gate" position="-2.7 0.75 0.01" width="6" color="#fff"></a-text>
+
+        <a-entity class="gateBtn clickable" data-gate="A1" position="-1.7 -0.2 0.02">
+          <a-plane class="clickable" width="1.6" height="0.8" color="#fff" opacity="0.95"></a-plane>
+          <a-text value="A1" align="center" position="0 -0.1 0.01" width="6" color="#111"></a-text>
+        </a-entity>
+
+        <a-entity class="gateBtn clickable" data-gate="A2" position="0 -0.2 0.02">
+          <a-plane class="clickable" width="1.6" height="0.8" color="#fff" opacity="0.95"></a-plane>
+          <a-text value="A2" align="center" position="0 -0.1 0.01" width="6" color="#111"></a-text>
+        </a-entity>
+
+        <a-entity class="gateBtn clickable" data-gate="A3" position="1.7 -0.2 0.02">
+          <a-plane class="clickable" width="1.6" height="0.8" color="#fff" opacity="0.95"></a-plane>
+          <a-text value="A3" align="center" position="0 -0.1 0.01" width="6" color="#111"></a-text>
+        </a-entity>
+      </a-entity>
+
+      <!-- Placa NEXT -->
+      <a-entity id="nextSign" position="0 2.3 4">
+        <a-plane width="6" height="1.2" color="#111" opacity="0.7"></a-plane>
+        <a-text id="nextText" value="NEXT: (seleciona um Gate)" position="-2.8 0.1 0.01" width="8" color="#fff"></a-text>
+      </a-entity>
+
+      <!-- Gates + targets -->
+      <a-entity id="gateA1" position="-3 1 -6.5">
+        <a-box width="2.2" height="2" depth="0.3" color="#d8b88f"></a-box>
+        <a-text value="A1" position="0 1.2 0.2" width="4" align="center" color="#111"></a-text>
+        <a-cylinder class="gateTarget" data-gate="A1" radius="2.2" height="3" position="0 1 0" visible="false"></a-cylinder>
+      </a-entity>
+
+      <a-entity id="gateA2" position="0 1 -6.5">
+        <a-box width="2.2" height="2" depth="0.3" color="#d8b88f"></a-box>
+        <a-text value="A2" position="0 1.2 0.2" width="4" align="center" color="#111"></a-text>
+        <a-cylinder class="gateTarget" data-gate="A2" radius="2.2" height="3" position="0 1 0" visible="false"></a-cylinder>
+      </a-entity>
+
+      <a-entity id="gateA3" position="3 1 -6.5">
+        <a-box width="2.2" height="2" depth="0.3" color="#d8b88f"></a-box>
+        <a-text value="A3" position="0 1.2 0.2" width="4" align="center" color="#111"></a-text>
+        <a-cylinder class="gateTarget" data-gate="A3" radius="2.2" height="3" position="0 1 0" visible="false"></a-cylinder>
+      </a-entity>
+
+      <!-- marcador destino -->
+      <a-entity id="targetMarker" visible="false">
+        <a-ring radius-inner="0.28" radius-outer="0.40" rotation="90 0 0" color="#111"></a-ring>
+        <a-text value="DESTINO" align="center" position="0 0.30 0" width="4" color="#111"></a-text>
+      </a-entity>
+
+    </a-scene>
+  </body>
+</html>
