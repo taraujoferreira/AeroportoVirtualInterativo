@@ -21,90 +21,170 @@
 
       AFRAME.registerComponent("wayfinding", {
         init: function () {
-          this.state = { targetGate: null, reached: false };
+          // ESTADO INICIAL
+          this.state = { 
+            targetGate: null, 
+            reached: false, 
+            securityPassed: false 
+          };
+
           this.el.sceneEl.addEventListener("loaded", () => {
             this.hudTarget = document.getElementById("hudTarget");
-            this.nextText = document.getElementById("nextText");
-            this.cam = document.getElementById("cam");
-            this.navArrow = document.getElementById("navArrow");
-            this.marker = document.getElementById("targetMarker");
-            this.gateSignText = document.getElementById("gateSignText");
+            this.cam = document.getElementById("cam"); 
+            this.player = document.getElementById("player"); 
+            this.wall = document.getElementById("securityWall");
+            this.wallText = document.getElementById("securityWallText");
             this.successSound = document.getElementById("soundSuccess");
+            
             this.gates = {
               A1: document.getElementById("gateA1"),
               A2: document.getElementById("gateA2"),
               A3: document.getElementById("gateA3"),
             };
             this.gateTargets = Array.from(document.querySelectorAll(".gateTarget"));
+            
+            // Configurar botões dos Gates
             document.querySelectorAll(".gateBtn").forEach((btn) => {
               btn.addEventListener("click", () => {
                 const gate = btn.getAttribute("data-gate");
                 this.setTargetGate(gate);
               });
-              btn.addEventListener("mouseenter", () =>
-                btn.object3D.scale.set(1.06, 1.06, 1.06)
-              );
-              btn.addEventListener("mouseleave", () =>
-                btn.object3D.scale.set(1, 1, 1)
-              );
+              btn.addEventListener("mouseenter", () => btn.object3D.scale.set(1.1, 1.1, 1.1));
+              btn.addEventListener("mouseleave", () => btn.object3D.scale.set(1, 1, 1));
             });
-            if (this.nextText)
-              this.nextText.setAttribute("value", "NEXT: (seleciona um Gate)");
+
+            // LÓGICA DO BOTÃO DE SEGURANÇA
+            const secBtn = document.querySelector('[data-action="validate-security"]');
+            if (secBtn) {
+                secBtn.addEventListener("click", () => {
+                    // 1. Só deixa validar se já escolheu gate
+                    if (!this.state.targetGate) {
+                        if(this.hudTarget) this.hudTarget.textContent = "⚠️ ERRO: Tens de fazer CHECK-IN primeiro!";
+                        return; 
+                    }
+
+                    // 2. Valida
+                    this.passSecurity(); 
+                    secBtn.setAttribute("color", "green"); 
+                    secBtn.removeAttribute("animation"); 
+                });
+            }
           });
         },
+
+        passSecurity: function() {
+            if(this.state.securityPassed) return;
+            this.state.securityPassed = true;
+            
+            if(this.successSound) this.successSound.components.sound.playSound();
+
+            // Esconde a parede
+            if(this.wall) this.wall.setAttribute("visible", "false"); 
+            if(this.wallText) this.wallText.setAttribute("value", "");
+
+            if(this.hudTarget) this.hudTarget.textContent = "✅ Segurança validada! Corre para o Gate.";
+        },
+
         setTargetGate: function (gate) {
           this.state.targetGate = gate;
           this.state.reached = false;
-          if (this.nextText)
-            this.nextText.setAttribute(
-              "value",
-              `NEXT: Gate ${gate}  →  Segurança  →  Gates`
-            );
-          if (this.hudTarget)
-            this.hudTarget.textContent = `Objetivo: ir para o Gate ${gate}. Segue a sinalética.`;
-          if (this.gateSignText)
-            this.gateSignText.setAttribute("value", `Gate ${gate}  →`);
+          if (this.hudTarget) this.hudTarget.textContent = `Objetivo: Passa a SEGURANÇA e vai ao Gate ${gate}.`;
+          
           const gateEl = this.gates?.[gate];
           if (!gateEl) return;
           const p = gateEl.object3D.getWorldPosition(new THREE.Vector3());
-          if (this.marker) {
-            this.marker.setAttribute("position", `${p.x} 2.9 ${p.z}`);
-            this.marker.setAttribute("visible", "true");
+          
+          const marker = document.getElementById("targetMarker");
+          if (marker) {
+            marker.setAttribute("position", `${p.x} 2.9 ${p.z}`);
+            marker.setAttribute("visible", "true");
           }
           if (this.navArrow) {
-            const aPos = this.navArrow.object3D.getWorldPosition(new THREE.Vector3());
-            const dx = p.x - aPos.x;
-            const dz = p.z - aPos.z;
-            const yaw = Math.atan2(dx, dz);
-            this.navArrow.object3D.rotation.set(0, yaw, 0);
-            this.navArrow.setAttribute("visible", "true");
+             const arrow = document.getElementById("navArrow");
+             if(arrow) arrow.setAttribute("visible", "true");
           }
         },
+
         tick: function () {
-          if (!this.state.targetGate || this.state.reached) return;
-          if (!this.cam || !this.gateTargets) return;
+          if (!this.cam) return;
+          
           const camPos = this.cam.object3D.getWorldPosition(new THREE.Vector3());
+
+          // ====================================================
+          // LÓGICA DE KICK CORRIGIDA (TELETRANSPORTE REAL)
+          // ====================================================
+          // Se passar a linha Z=2.5 sem validar:
+          if (camPos.z < 2.5 && !this.state.securityPassed) {
+             
+             if(this.hudTarget) this.hudTarget.textContent = "⛔ STOP! Valida a bagagem no botão vermelho!";
+             
+             // CÁLCULO DE TELETRANSPORTE
+             // Queremos que a câmara vá para Z=18 (Check-in) e X=0 (Centro)
+             // Calculamos a diferença entre onde estás e onde deves estar
+             const rig = document.getElementById("player");
+             if(rig) {
+                 const currentRigPos = rig.getAttribute('position');
+                 
+                 // Ajuste matemático: Move o Rig o suficiente para a câmara ficar em Z=18
+                 const offsetX = 0 - camPos.x;
+                 const offsetZ = 18 - camPos.z;
+
+                 rig.object3D.position.x += offsetX;
+                 rig.object3D.position.z += offsetZ;
+             }
+          }
+
+          // Chegada ao Gate (Mantido igual)
+          if (!this.state.targetGate || this.state.reached) return;
+          if (!this.gateTargets) return;
+          
           for (const t of this.gateTargets) {
             const gate = t.getAttribute("data-gate");
             if (gate !== this.state.targetGate) continue;
+            
             const tPos = t.object3D.getWorldPosition(new THREE.Vector3());
             const dx = camPos.x - tPos.x;
             const dz = camPos.z - tPos.z;
             const d = Math.sqrt(dx * dx + dz * dz);
+            
             if (d < 2.0) {
               this.state.reached = true;
-              if (this.marker) this.marker.setAttribute("visible", "false");
-              if (this.navArrow) this.navArrow.setAttribute("visible", "false");
-              if (this.hudTarget) this.hudTarget.textContent = `✅ Chegaste ao Gate ${gate}.`;
-              if (this.nextText)
-                this.nextText.setAttribute("value", "NEXT: (seleciona outro Gate no Check-in)");
-              if (this.gateSignText)
-                this.gateSignText.setAttribute("value", `✅ Gate ${gate} (chegaste)`);
-              if (this.successSound) {
-                this.successSound.components.sound.playSound();
-              }
+              if (this.hudTarget) this.hudTarget.textContent = `✅ Chegaste ao Gate ${gate}. Vê o destino na esfera!`;
+              if (this.successSound) this.successSound.components.sound.playSound();
+              
+              const marker = document.getElementById("targetMarker");
+              const arrow = document.getElementById("navArrow");
+              if(marker) marker.setAttribute("visible", "false");
+              if(arrow) arrow.setAttribute("visible", "false");
             }
           }
+        },
+      });
+
+      // Componente da Esfera (Preview) - Mantido igual
+      AFRAME.registerComponent("destination-preview", {
+        init: function () {
+          this.el.addEventListener("click", () => {
+            const sky = document.getElementById("main-sky");
+            const paris360 = "paris.jpg";
+            
+            if (sky) {
+                sky.setAttribute("src", paris360);
+                sky.setAttribute("color", "#FFF");
+                const sound = document.getElementById("soundSuccess");
+                if(sound) sound.components.sound.playSound();
+                const hud = document.getElementById("hudTarget");
+                if(hud) hud.textContent = "🗼 Bem-vindo a Paris! (Olha em volta)";
+            }
+          });
+          this.el.addEventListener("mouseenter", () => {
+            this.el.setAttribute("scale", "1.2 1.2 1.2");
+            this.el.setAttribute("material", "color: #e74c3c"); 
+          });
+          this.el.addEventListener("mouseleave", () => {
+            this.el.setAttribute("scale", "1 1 1");
+            this.el.setAttribute("material", "color: #3498db");
+          });
         },
       });
     </script>
@@ -126,7 +206,8 @@
     </div>
 
     <a-scene wayfinding renderer="colorManagement: true; physicallyCorrectLights: true;"
-             shadow="type: pcfsoft" background="color: #87CEEB">
+             shadow="type: pcfsoft" >
+             <a-sky id="main-sky" color="#87CEEB"></a-sky>
 
       <a-assets>
         <img id="chao-tex" src="chao2.jpg">
@@ -162,7 +243,7 @@
       </a-entity>
 
       <!-- Exterior -->
-      <a-plane position="0 -0.1 -50" rotation="-90 0 0" width="300" height="300" color="#333" shadow="receive: true"></a-plane>
+      <a-plane position="0 -0.1 -50" rotation="-90 0 0" width="150" height="300" color="#333" shadow="receive: true"></a-plane>
       <a-plane position="-20 0 -50" rotation="-90 0 0" width="2" height="200" color="#fff"></a-plane>
       <a-plane position="-35 0 -50" rotation="-90 0 0" width="1" height="200" color="#fff"></a-plane>
       <a-box position="0 -0.05 34" width="20" height="0.1" depth="8" color="#7f8c8d"></a-box>
@@ -265,12 +346,34 @@
       <!-- =========================
            SECURITY (mantida)
            ========================= -->
-      <a-entity position="0 2.8 1">
-        <a-box width="4" height="0.6" depth="0.1" color="#196f3d"></a-box>
-        <a-text value="SECURITY" align="center" position="0 0 0.06" width="6" color="#fff"></a-text>
+        <a-entity position="0 0 1"> <a-box id="securityWall" 
+               position="0 2.5 0" 
+               width="5.5" height="5" depth="0.1" 
+               color="red" 
+               material="opacity: 0.3; transparent: true; side: double"
+               visible="true">
+        </a-box>
+        
+        <a-text id="securityWallText" value="PARE!\nValide a bagagem." 
+                align="center" position="0 2.5 0.1" width="6" color="red"></a-text>
+
+        <a-box position="0 2.8 0" width="4" height="0.6" depth="0.1" color="#196f3d"></a-box>
+        <a-text value="SECURITY CHECK" align="center" position="0 2.8 0.06" width="6" color="#fff"></a-text>
+
+        <a-entity gltf-model="#modelo-security" position="-2.712 0 0" scale="0.9 0.9 0.9" rotation="0 90 0"></a-entity>
+        <a-entity gltf-model="#modelo-security" position="2.712 0 0" scale="0.9 0.9 0.9" rotation="0 270 0"></a-entity>
+
+        <a-entity id="securityButton" position="0 1 0.5">
+            <a-box class="clickable" 
+                   data-action="validate-security"
+                   position="0 0 0" 
+                   depth="0.2" height="0.4" width="0.6" 
+                   color="#c0392b"
+                   animation="property: scale; dir: alternate; dur: 1000; loop: true; to: 1.1 1.1 1.1">
+            </a-box>
+            <a-text value="CLICK" align="center" position="0 0 0.11" width="4"></a-text>
+        </a-entity>
       </a-entity>
-      <a-entity gltf-model="#modelo-security" position="-2.712 0 0" scale="0.9 0.9 0.9" rotation="0 90 0" shadow="cast: true"></a-entity>
-      <a-entity gltf-model="#modelo-security" position="2.712 0 0" scale="0.9 0.9 0.9" rotation="0 270 0" shadow="cast: true"></a-entity>
 
       <!-- =========================
            CORREDOR PARA GATES + SINAL
@@ -315,6 +418,22 @@
            GATES (mais para trás + placas 3D)
            ========================= -->
 
+
+      <a-entity position="-4 1.5 -38" rotation="0 45 0">
+        <a-text value="PREVIEW: PARIS" align="center" position="0 1.3 0" color="#333" scale="1.5 1.5 1.5"></a-text>
+        <a-text value="(Clica para ver o destino)" align="center" position="0 1.1 0" color="#555" scale="0.8 0.8 0.8"></a-text>
+
+        <a-sphere class="clickable" 
+                  destination-preview
+                  radius="0.6" 
+                  color="#3498db" 
+                  material="opacity: 0.9; roughness: 0.2; metalness: 0.8"
+                  animation="property: position; dir: alternate; dur: 2000; easing: easeInOutSine; loop: true; to: 0 0.1 0">
+        </a-sphere>
+        
+        <a-cylinder radius="0.1" height="1" position="0 -1 0" color="#888"></a-cylinder>
+      </a-entity>
+
       <!-- Gate A1 -->
       <a-entity id="gateA1" position="-6 1 -44">
         <a-box width="2.4" height="2.2" depth="0.12" color="#d8b88f"></a-box>
@@ -347,13 +466,6 @@
         <a-text value="A3" position="0 3.35 0.7" align="center" color="#fff" width="6"></a-text>
 
         <a-cylinder class="gateTarget" data-gate="A3" radius="1.8" height="3" visible="false"></a-cylinder>
-      </a-entity>
-
-      <!-- =========================
-           UI/HELPERS (mantidos)
-           ========================= -->
-      <a-entity id="nextSign" position="0 2 16" rotation="0 180 0">
-        <a-text id="nextText" value="NEXT: Faz Check-in" align="center" color="#111" width="4"></a-text>
       </a-entity>
 
       <!-- seta começa mais à frente do corredor -->
