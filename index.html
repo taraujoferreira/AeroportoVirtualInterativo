@@ -54,21 +54,27 @@
             });
 
             // LÓGICA DO BOTÃO DE SEGURANÇA
-            const secBtn = document.querySelector('[data-action="validate-security"]');
-            if (secBtn) {
-                secBtn.addEventListener("click", () => {
-                    // 1. Só deixa validar se já escolheu gate
-                    if (!this.state.targetGate) {
-                        if(this.hudTarget) this.hudTarget.textContent = "⚠️ ERRO: Tens de fazer CHECK-IN primeiro!";
-                        return; 
-                    }
+            this.secBtn = document.querySelector('[data-action="validate-security"]');
 
-                    // 2. Valida
-                    this.passSecurity(); 
-                    secBtn.setAttribute("color", "green"); 
-                    secBtn.removeAttribute("animation"); 
-                });
+            if (this.secBtn) {
+              this.secBtn.addEventListener("click", () => {
+                // 1. Só deixa validar se já escolheu gate
+                if (!this.state.targetGate) {
+                  if (this.hudTarget) this.hudTarget.textContent = "⚠️ ERRO: Tens de fazer CHECK-IN primeiro!";
+                  return;
+                }
+
+                // 2. Valida
+                this.passSecurity();
+
+                
+
+                // UI do botão
+                this.secBtn.setAttribute("color", "green");
+                this.secBtn.removeAttribute("animation");
+              });
             }
+
           });
         },
 
@@ -85,9 +91,33 @@
             if(this.hudTarget) this.hudTarget.textContent = "✅ Segurança validada! Corre para o Gate.";
         },
 
+        resetSecurity: function () {
+            // Sempre que muda o gate, volta a exigir segurança
+            this.state.securityPassed = false;
+
+            // Volta a mostrar a parede e o texto
+            if (this.wall) this.wall.setAttribute("visible", "true");
+            if (this.wallText) this.wallText.setAttribute("value", "PARE!\nValide a bagagem.");
+
+            // Reset do botão (vermelho + a piscar)
+            if (this.secBtn) {
+              this.secBtn.setAttribute("color", "#c0392b");
+              this.secBtn.setAttribute(
+                "animation",
+                "property: scale; dir: alternate; dur: 1000; loop: true; to: 1.1 1.1 1.1"
+              );
+            }
+            // Respawn da mala no check-in quando muda o gate
+            const luggageSys = this.el.sceneEl.components["luggage-system"];
+            if (luggageSys) luggageSys.respawnLuggage();
+
+          },
+
+
         setTargetGate: function (gate) {
           this.state.targetGate = gate;
           this.state.reached = false;
+          this.resetSecurity();
           if (this.hudTarget) this.hudTarget.textContent = `Objetivo: Passa a SEGURANÇA e vai ao Gate ${gate}.`;
           
           const gateEl = this.gates?.[gate];
@@ -187,6 +217,145 @@
           });
         },
       });
+
+      // =====================================================
+      // 1) Grab & Drop de "mala" (sem physics)
+      // =====================================================
+      AFRAME.registerComponent("luggage-system", {
+        init: function () {
+          this.held = false;
+          this.holdingOffset = { x: 0.9, y: -0.6, z: -0.9 };
+
+          // Espera que a cena esteja pronta
+          this.el.sceneEl.addEventListener("loaded", () => {
+            this.wf = this.el.sceneEl.components.wayfinding;
+
+            this.cam = document.getElementById("cam");
+            this.hudTarget = document.getElementById("hudTarget");
+
+            this.luggage = document.getElementById("luggage");
+            this.dropzone = document.getElementById("securityDropzone");
+
+            if (!this.luggage) {
+              console.warn("[luggage-system] #luggage não encontrado");
+              return;
+            }
+
+            // Guarda posição inicial para respawn
+            const p = this.luggage.getAttribute("position");
+            this.spawnPos = { x: p.x, y: p.y, z: p.z };
+            this.spawnRot = this.luggage.getAttribute("rotation") || { x: 0, y: 0, z: 0 };
+
+            // Click para pegar/largar
+            this.luggage.addEventListener("click", () => {
+              // Se o wayfinding ainda não estiver pronto, não bloqueia — só avisa
+              if (!this.wf || !this.wf.state) {
+                console.warn("[luggage-system] wayfinding ainda não pronto");
+              }
+
+              // Se quiseres obrigar a escolher gate antes de pegar:
+              if (this.wf && this.wf.state && !this.wf.state.targetGate) {
+                if (this.hudTarget) this.hudTarget.textContent = "⚠️ Faz CHECK-IN e escolhe um Gate primeiro.";
+                return;
+              }
+
+              if (!this.held) this.pickUp();
+              else this.drop();
+            });
+
+            // Tecla E para largar
+            window.addEventListener("keydown", (e) => {
+              if (e.key.toLowerCase() === "e" && this.held) this.drop();
+            });
+
+            console.log("[luggage-system] pronto ✅");
+          });
+        },
+
+        respawnLuggage: function () {
+          if (!this.luggage) return;
+
+          this.held = false;
+
+          // Remove de qualquer parent
+          if (this.luggage.object3D.parent) this.luggage.object3D.parent.remove(this.luggage.object3D);
+
+          // Volta para a scene
+          this.el.sceneEl.object3D.add(this.luggage.object3D);
+
+          this.luggage.setAttribute("position", `${this.spawnPos.x} ${this.spawnPos.y} ${this.spawnPos.z}`);
+          this.luggage.setAttribute("rotation", `${this.spawnRot.x} ${this.spawnRot.y} ${this.spawnRot.z}`);
+          this.luggage.setAttribute("visible", "true");
+        },
+
+        pickUp: function () {
+          if (!this.cam || !this.luggage) return;
+
+          this.held = true;
+
+          // Remove do parent atual e adiciona à camera
+          if (this.luggage.object3D.parent) this.luggage.object3D.parent.remove(this.luggage.object3D);
+          this.cam.object3D.add(this.luggage.object3D);
+
+          this.luggage.object3D.position.set(this.holdingOffset.x, this.holdingOffset.y, this.holdingOffset.z);
+          this.luggage.object3D.rotation.set(0, 0, 0);
+
+          if (this.hudTarget) {
+            this.hudTarget.textContent = "🧳 Pegaste na mala. Leva-a à segurança e larga no círculo verde (E ou click).";
+          }
+        },
+
+        drop: function () {
+          if (!this.cam || !this.luggage) return;
+
+          const worldPos = new THREE.Vector3();
+          this.luggage.object3D.getWorldPosition(worldPos);
+
+          this.cam.object3D.remove(this.luggage.object3D);
+          this.el.sceneEl.object3D.add(this.luggage.object3D);
+
+          this.luggage.object3D.position.set(worldPos.x, 0, worldPos.z);
+          this.held = false;
+
+          if (this.isOnDropzone()) this.snapToDropzoneAndValidate();
+          else if (this.hudTarget) this.hudTarget.textContent = "📦 Largaste a mala. (Dica: larga no círculo verde.)";
+        },
+
+        isOnDropzone: function () {
+          if (!this.dropzone || !this.luggage) return false;
+
+          const dz = new THREE.Vector3();
+          const lp = new THREE.Vector3();
+
+          this.dropzone.object3D.getWorldPosition(dz);
+          this.luggage.object3D.getWorldPosition(lp);
+
+          const dx = dz.x - lp.x;
+          const dzv = dz.z - lp.z;
+          const d = Math.sqrt(dx * dx + dzv * dzv);
+
+          return d < 1.0;
+        },
+
+        snapToDropzoneAndValidate: function () {
+          if (!this.dropzone || !this.luggage) return;
+
+          const dz = this.dropzone.getAttribute("position");
+          this.luggage.setAttribute("position", `${dz.x} ${dz.y + 0.25} ${dz.z}`);
+
+          // Se wayfinding existir e ainda não estiver validado, valida
+          if (this.wf && this.wf.state && !this.wf.state.securityPassed) {
+            this.wf.passSecurity();
+          }
+
+          if (this.hudTarget) {
+            this.hudTarget.textContent = "✅ Bagagem validada! Podes pegar na mala e seguir para os Gates.";
+          }
+        },
+      });
+
+
+
     </script>
 
     <style>
@@ -205,14 +374,19 @@
       <br/><span id="hudTarget">Entra no aeroporto e faz Check-in.</span>
     </div>
 
-    <a-scene wayfinding renderer="colorManagement: true; physicallyCorrectLights: true;"
-             shadow="type: pcfsoft" >
-             <a-sky id="main-sky" color="#87CEEB"></a-sky>
+    <a-scene wayfinding luggage-system
+            renderer="colorManagement: true; physicallyCorrectLights: true;"
+            shadow="type: pcfsoft">
+      <a-sky id="main-sky" color="#87CEEB"></a-sky>
+
 
       <a-assets>
         <img id="chao-tex" src="chao2.jpg">
         <img id="parede-tex" src="parede.jpg">
         <img id="asfalto-tex" src="https://cdn.aframe.io/a-painter/images/floor.jpg">
+
+        <a-asset-item id="modelo-mala" src="luggage.glb"></a-asset-item>
+
 
         <a-asset-item id="modelo-balcao" src="airport_check_in_desk.glb"></a-asset-item>
         <a-asset-item id="modelo-security" src="airport_security_check.glb"></a-asset-item>
@@ -311,6 +485,18 @@
       <a-entity gltf-model="#modelo-balcao" position="5.597 0 17.196" scale="0.9 0.9 0.9" rotation="0 180 0" shadow="cast: true"></a-entity>
       <a-entity gltf-model="#modelo-balcao" position="5.597 0 23.292"  scale="0.9 0.9 0.9" rotation="0 180 0" shadow="cast: true"></a-entity>
 
+      <!-- MALA (aparece no check-in; click = pegar/largar) -->
+      <a-entity id="luggage" class="clickable"
+                position="3 0 20.866" rotation="0 90 0" visible="true">
+        <a-entity class="clickable"
+                  gltf-model="#modelo-mala"
+                  scale="1.5 1.5 1.5"
+                  rotation="0 0 0">
+        </a-entity>
+      </a-entity>
+
+
+
       <!-- =========================
      CADEIRAS NA ZONA DO CHECK-IN
      (4 cadeiras, depois ajustas rotação/posição)
@@ -355,24 +541,25 @@
         </a-box>
         
         <a-text id="securityWallText" value="PARE!\nValide a bagagem." 
-                align="center" position="0 2.5 0.1" width="6" color="red"></a-text>
+                align="center" position="0 3.621 0.1" width="6" color="red"></a-text>
 
-        <a-box position="0 2.8 0" width="4" height="0.6" depth="0.1" color="#196f3d"></a-box>
-        <a-text value="SECURITY CHECK" align="center" position="0 2.8 0.06" width="6" color="#fff"></a-text>
+        <a-box position="0 4.618 1.078" width="4" height="0.6" depth="0.1" color="#196f3d"></a-box>
+        <a-text value="SECURITY CHECK" align="center" position="0 4.638 1.179" width="6" color="#fff"></a-text>
 
         <a-entity gltf-model="#modelo-security" position="-2.712 0 0" scale="0.9 0.9 0.9" rotation="0 90 0"></a-entity>
         <a-entity gltf-model="#modelo-security" position="2.712 0 0" scale="0.9 0.9 0.9" rotation="0 270 0"></a-entity>
 
-        <a-entity id="securityButton" position="0 1 0.5">
-            <a-box class="clickable" 
-                   data-action="validate-security"
-                   position="0 0 0" 
-                   depth="0.2" height="0.4" width="0.6" 
-                   color="#c0392b"
-                   animation="property: scale; dir: alternate; dur: 1000; loop: true; to: 1.1 1.1 1.1">
-            </a-box>
-            <a-text value="CLICK" align="center" position="0 0 0.11" width="4"></a-text>
-        </a-entity>
+        <!-- DROPZONE DO SCANNER (onde tens de largar a mala) -->
+        <a-cylinder id="securityDropzone"
+                    position="2.771 0.937 1.625"
+                    radius="0.8" height="0.05"
+                    color="#27ae60"
+                    material="opacity: 0.80; transparent: true"
+                    shadow="receive: true">
+        </a-cylinder>
+
+        <a-text value="DROP BAG HERE" position="2.780 1.270 1.744"
+                align="center" width="4" color="#b7f5d1"></a-text>
       </a-entity>
 
       <!-- =========================
