@@ -22,27 +22,30 @@
       AFRAME.registerComponent("wayfinding", {
         init: function () {
           // ESTADO INICIAL
-          this.state = { 
-            targetGate: null, 
-            reached: false, 
-            securityPassed: false 
+          this.state = {
+            targetGate: null,
+            reached: false,
+            securityPassed: false,
+            baggageType: null,
+            requiredItem: null, // "luggage" | "backpack"
           };
 
           this.el.sceneEl.addEventListener("loaded", () => {
             this.hudTarget = document.getElementById("hudTarget");
-            this.cam = document.getElementById("cam"); 
-            this.player = document.getElementById("player"); 
+            this.cam = document.getElementById("cam");
+            this.player = document.getElementById("player");
             this.wall = document.getElementById("securityWall");
             this.wallText = document.getElementById("securityWallText");
             this.successSound = document.getElementById("soundSuccess");
-            
+
+
             this.gates = {
               A1: document.getElementById("gateA1"),
               A2: document.getElementById("gateA2"),
               A3: document.getElementById("gateA3"),
             };
             this.gateTargets = Array.from(document.querySelectorAll(".gateTarget"));
-            
+
             // Configurar botões dos Gates
             document.querySelectorAll(".gateBtn").forEach((btn) => {
               btn.addEventListener("click", () => {
@@ -53,164 +56,207 @@
               btn.addEventListener("mouseleave", () => btn.object3D.scale.set(1, 1, 1));
             });
 
-            // LÓGICA DO BOTÃO DE SEGURANÇA
-            this.secBtn = document.querySelector('[data-action="validate-security"]');
-
-            if (this.secBtn) {
-              this.secBtn.addEventListener("click", () => {
-                // 1. Só deixa validar se já escolheu gate
-                if (!this.state.targetGate) {
-                  if (this.hudTarget) this.hudTarget.textContent = "⚠️ ERRO: Tens de fazer CHECK-IN primeiro!";
-                  return;
-                }
-
-                // 2. Valida
-                this.passSecurity();
-
-                
-
-                // UI do botão
-                this.secBtn.setAttribute("color", "green");
-                this.secBtn.removeAttribute("animation");
+            // Botões de Bagagem
+            document.querySelectorAll(".bagBtn").forEach((btn) => {
+              btn.addEventListener("click", () => {
+                const type = btn.getAttribute("data-bag"); // "hand" | "checked"
+                this.setBaggageType(type);
               });
-            }
 
+              btn.addEventListener("mouseenter", () => btn.object3D.scale.set(1.08, 1.08, 1.08));
+              btn.addEventListener("mouseleave", () => btn.object3D.scale.set(1, 1, 1));
+            });
+
+            // Ao carregar, esconde tudo até escolher bagagem
+            this.resetBaggageChoice();
           });
         },
 
-        passSecurity: function() {
-            if(this.state.securityPassed) return;
-            this.state.securityPassed = true;
-            
-            if(this.successSound) this.successSound.components.sound.playSound();
-
-            // Esconde a parede
-            if(this.wall) this.wall.setAttribute("visible", "false"); 
-            if(this.wallText) this.wallText.setAttribute("value", "");
-
-            if(this.hudTarget) this.hudTarget.textContent = "✅ Segurança validada! Corre para o Gate.";
+        getCarrySys: function () {
+          return this.el.sceneEl.components["carry-system"];
         },
 
+        passSecurity: function(delayMs = 0) {
+          if (this.state.securityPassed) return;
+
+          const doPass = () => {
+            if (this.state.securityPassed) return;
+            this.state.securityPassed = true;
+
+            if (this.successSound) this.successSound.components.sound.playSound();
+
+            if (this.wall) this.wall.setAttribute("visible", "false");
+            if (this.wallText) this.wallText.setAttribute("value", "");
+
+            if (this.hudTarget) this.hudTarget.textContent = "✅ Raio-X concluído! Podes seguir para o Gate.";
+          };
+
+          if (delayMs > 0) setTimeout(doPass, delayMs);
+          else doPass();
+        },
+
+
         resetSecurity: function () {
-            // Sempre que muda o gate, volta a exigir segurança
-            this.state.securityPassed = false;
+          this.state.securityPassed = false;
 
-            // Volta a mostrar a parede e o texto
-            if (this.wall) this.wall.setAttribute("visible", "true");
-            if (this.wallText) this.wallText.setAttribute("value", "PARE!\nValide a bagagem.");
+          if (this.wall) this.wall.setAttribute("visible", "true");
+          if (this.wallText) this.wallText.setAttribute("value", "PARE!\nValide os seus pertences no raio-X.");
 
-            // Reset do botão (vermelho + a piscar)
-            if (this.secBtn) {
-              this.secBtn.setAttribute("color", "#c0392b");
-              this.secBtn.setAttribute(
-                "animation",
-                "property: scale; dir: alternate; dur: 1000; loop: true; to: 1.1 1.1 1.1"
-              );
+          // Se já houver escolha de bagagem, respawn do item obrigatório
+          const carrySys = this.getCarrySys();
+          if (carrySys && this.state.requiredItem) {
+            carrySys.setActiveItem(this.state.requiredItem);
+            carrySys.respawnActiveItem();
+          }
+        },
+
+        resetBaggageChoice: function () {
+          this.state.baggageType = null;
+          this.state.requiredItem = null;
+
+          const carrySys = this.getCarrySys();
+          if (carrySys) carrySys.hideAllItems();
+        },
+
+        setBaggageType: function (type) {
+          if (!this.state.targetGate) {
+            if (this.hudTarget) this.hudTarget.textContent = "⚠️ Primeiro escolhe um Gate no CHECK-IN.";
+            return;
+          }
+
+          this.state.baggageType = type;
+
+          const carrySys = this.getCarrySys();
+          if (!carrySys) return;
+
+          if (type === "hand") {
+            // Mão → valida a mala
+            this.state.requiredItem = "luggage";
+            carrySys.setActiveItem("luggage");
+            carrySys.respawnActiveItem();
+
+            if (this.hudTarget) {
+              this.hudTarget.textContent =
+                "🎒 Bagagem de MÃO: pega na mala e larga no scanner (círculo verde) para validar.";
             }
-            // Respawn da mala no check-in quando muda o gate
-            const luggageSys = this.el.sceneEl.components["luggage-system"];
-            if (luggageSys) luggageSys.respawnLuggage();
+            return;
+          }
 
-          },
+          if (type === "checked") {
+            // Porão → valida a mochila (pertences)
+            this.state.requiredItem = "backpack";
+            carrySys.setActiveItem("backpack");
+            carrySys.respawnActiveItem();
 
+            if (this.hudTarget) {
+              this.hudTarget.textContent =
+                "🧳 Bagagem de PORÃO: pega na mochila (pertences) e larga no scanner (círculo verde) para validar.";
+            }
+          }
+        },
 
         setTargetGate: function (gate) {
+          const changed = this.state.targetGate !== gate;
+
           this.state.targetGate = gate;
           this.state.reached = false;
-          this.resetSecurity();
-          if (this.hudTarget) this.hudTarget.textContent = `Objetivo: Passa a SEGURANÇA e vai ao Gate ${gate}.`;
-          
+
+          if (changed) {
+            // ao mudar de gate: reseta segurança + volta a pedir escolha de bagagem
+            this.resetSecurity();
+            this.resetBaggageChoice();
+          }
+
+          if (this.hudTarget) {
+            this.hudTarget.textContent = `✅ Gate ${gate} escolhido. Agora escolhe o tipo de bagagem (MÃO ou PORÃO).`;
+          }
+
           const gateEl = this.gates?.[gate];
           if (!gateEl) return;
+
           const p = gateEl.object3D.getWorldPosition(new THREE.Vector3());
-          
+
           const marker = document.getElementById("targetMarker");
           if (marker) {
             marker.setAttribute("position", `${p.x} 2.9 ${p.z}`);
             marker.setAttribute("visible", "true");
           }
-          if (this.navArrow) {
-             const arrow = document.getElementById("navArrow");
-             if(arrow) arrow.setAttribute("visible", "true");
-          }
+
+          const arrow = document.getElementById("navArrow");
+          if (arrow) arrow.setAttribute("visible", "true");
         },
 
         tick: function () {
           if (!this.cam) return;
-          
+
           const camPos = this.cam.object3D.getWorldPosition(new THREE.Vector3());
 
-          // ====================================================
-          // LÓGICA DE KICK CORRIGIDA (TELETRANSPORTE REAL)
-          // ====================================================
-          // Se passar a linha Z=2.5 sem validar:
+          // BLOQUEIO DA SEGURANÇA (kick)
           if (camPos.z < 2.5 && !this.state.securityPassed) {
-             
-             if(this.hudTarget) this.hudTarget.textContent = "⛔ STOP! Valida a bagagem no botão vermelho!";
-             
-             // CÁLCULO DE TELETRANSPORTE
-             // Queremos que a câmara vá para Z=18 (Check-in) e X=0 (Centro)
-             // Calculamos a diferença entre onde estás e onde deves estar
-             const rig = document.getElementById("player");
-             if(rig) {
-                 const currentRigPos = rig.getAttribute('position');
-                 
-                 // Ajuste matemático: Move o Rig o suficiente para a câmara ficar em Z=18
-                 const offsetX = 0 - camPos.x;
-                 const offsetZ = 18 - camPos.z;
+            if (this.hudTarget) {
+              this.hudTarget.textContent =
+                "⛔ STOP! Coloca os teus pertences no scanner (círculo verde) para passar.";
+            }
 
-                 rig.object3D.position.x += offsetX;
-                 rig.object3D.position.z += offsetZ;
-             }
+            const rig = document.getElementById("player");
+            if (rig) {
+              const offsetX = 0 - camPos.x;
+              const offsetZ = 18 - camPos.z;
+
+              rig.object3D.position.x += offsetX;
+              rig.object3D.position.z += offsetZ;
+            }
           }
 
-          // Chegada ao Gate (Mantido igual)
+          // Chegada ao Gate
           if (!this.state.targetGate || this.state.reached) return;
           if (!this.gateTargets) return;
-          
+
           for (const t of this.gateTargets) {
             const gate = t.getAttribute("data-gate");
             if (gate !== this.state.targetGate) continue;
-            
+
             const tPos = t.object3D.getWorldPosition(new THREE.Vector3());
             const dx = camPos.x - tPos.x;
             const dz = camPos.z - tPos.z;
             const d = Math.sqrt(dx * dx + dz * dz);
-            
+
             if (d < 2.0) {
               this.state.reached = true;
               if (this.hudTarget) this.hudTarget.textContent = `✅ Chegaste ao Gate ${gate}. Vê o destino na esfera!`;
               if (this.successSound) this.successSound.components.sound.playSound();
-              
+
               const marker = document.getElementById("targetMarker");
               const arrow = document.getElementById("navArrow");
-              if(marker) marker.setAttribute("visible", "false");
-              if(arrow) arrow.setAttribute("visible", "false");
+              if (marker) marker.setAttribute("visible", "false");
+              if (arrow) arrow.setAttribute("visible", "false");
             }
           }
         },
       });
 
-      // Componente da Esfera (Preview) - Mantido igual
+      // Preview (igual)
       AFRAME.registerComponent("destination-preview", {
         init: function () {
           this.el.addEventListener("click", () => {
             const sky = document.getElementById("main-sky");
             const paris360 = "paris.jpg";
-            
+
             if (sky) {
-                sky.setAttribute("src", paris360);
-                sky.setAttribute("color", "#FFF");
-                const sound = document.getElementById("soundSuccess");
-                if(sound) sound.components.sound.playSound();
-                const hud = document.getElementById("hudTarget");
-                if(hud) hud.textContent = "🗼 Bem-vindo a Paris! (Olha em volta)";
+              sky.setAttribute("src", paris360);
+              sky.setAttribute("color", "#FFF");
+              const sound = document.getElementById("soundSuccess");
+              if (sound) sound.components.sound.playSound();
+              const hud = document.getElementById("hudTarget");
+              if (hud) hud.textContent = "🗼 Bem-vindo a Paris! (Olha em volta)";
             }
           });
+
           this.el.addEventListener("mouseenter", () => {
             this.el.setAttribute("scale", "1.2 1.2 1.2");
-            this.el.setAttribute("material", "color: #e74c3c"); 
+            this.el.setAttribute("material", "color: #e74c3c");
           });
+
           this.el.addEventListener("mouseleave", () => {
             this.el.setAttribute("scale", "1 1 1");
             this.el.setAttribute("material", "color: #3498db");
@@ -218,145 +264,262 @@
         },
       });
 
-      // =====================================================
-      // 1) Grab & Drop de "mala" (sem physics)
-      // =====================================================
-      AFRAME.registerComponent("luggage-system", {
+      // Desbloqueia o áudio no 1º input (Chrome/VR bloqueia autoplay)
+      AFRAME.registerComponent("audio-unlock", {
         init: function () {
-          this.held = false;
-          this.holdingOffset = { x: 0.9, y: -0.6, z: -0.9 };
+          const getCtx = () => {
+            // A-Frame 1.5 / three.js: contexto de áudio recomendado
+            if (window.THREE?.AudioContext?.getContext) return THREE.AudioContext.getContext();
+            // fallback (caso raro)
+            return AFRAME.audioContext || null;
+          };
 
-          // Espera que a cena esteja pronta
-          this.el.sceneEl.addEventListener("loaded", () => {
-            this.wf = this.el.sceneEl.components.wayfinding;
+          const forcePlayWhenReady = () => {
+            // força o ambiente a tocar, mas só quando estiver carregado
+            const ambienceEl = document.getElementById("ambience");
+            if (!ambienceEl || !ambienceEl.components?.sound) return;
 
-            this.cam = document.getElementById("cam");
-            this.hudTarget = document.getElementById("hudTarget");
+            // se já estiver carregado, toca já
+            if (ambienceEl.components.sound.isPlaying) return;
+            ambienceEl.components.sound.playSound();
+          };
 
-            this.luggage = document.getElementById("luggage");
-            this.dropzone = document.getElementById("securityDropzone");
+          const unlock = async () => {
+            try {
+              const ctx = getCtx();
+              if (ctx && ctx.state !== "running") await ctx.resume();
 
-            if (!this.luggage) {
-              console.warn("[luggage-system] #luggage não encontrado");
-              return;
+              console.log("[audio] unlocked ✅ state:", getCtx()?.state);
+
+              // tenta tocar já (se não estiver carregado, vai avisar)
+              forcePlayWhenReady();
+            } catch (e) {
+              console.warn("[audio] unlock falhou:", e);
             }
 
-            // Guarda posição inicial para respawn
-            const p = this.luggage.getAttribute("position");
-            this.spawnPos = { x: p.x, y: p.y, z: p.z };
-            this.spawnRot = this.luggage.getAttribute("rotation") || { x: 0, y: 0, z: 0 };
+            window.removeEventListener("click", unlock);
+            window.removeEventListener("keydown", unlock);
+            window.removeEventListener("touchstart", unlock);
 
-            // Click para pegar/largar
-            this.luggage.addEventListener("click", () => {
-              // Se o wayfinding ainda não estiver pronto, não bloqueia — só avisa
-              if (!this.wf || !this.wf.state) {
-                console.warn("[luggage-system] wayfinding ainda não pronto");
-              }
+            const canvas = this.el.sceneEl?.canvas;
+            if (canvas) canvas.removeEventListener("click", unlock);
+          };
 
-              // Se quiseres obrigar a escolher gate antes de pegar:
-              if (this.wf && this.wf.state && !this.wf.state.targetGate) {
-                if (this.hudTarget) this.hudTarget.textContent = "⚠️ Faz CHECK-IN e escolhe um Gate primeiro.";
-                return;
-              }
+          // garantir unlock via eventos comuns + click no canvas
+          window.addEventListener("click", unlock);
+          window.addEventListener("keydown", unlock);
+          window.addEventListener("touchstart", unlock);
 
-              if (!this.held) this.pickUp();
-              else this.drop();
-            });
-
-            // Tecla E para largar
-            window.addEventListener("keydown", (e) => {
-              if (e.key.toLowerCase() === "e" && this.held) this.drop();
-            });
-
-            console.log("[luggage-system] pronto ✅");
+          this.el.sceneEl.addEventListener("renderstart", () => {
+            const canvas = this.el.sceneEl.canvas;
+            if (canvas) canvas.addEventListener("click", unlock);
           });
-        },
 
-        respawnLuggage: function () {
-          if (!this.luggage) return;
+          // quando o som estiver carregado, toca (resolve o warn)
+          this.el.sceneEl.addEventListener("loaded", () => {
+            const ambienceEl = document.getElementById("ambience");
+            if (!ambienceEl) return;
 
-          this.held = false;
-
-          // Remove de qualquer parent
-          if (this.luggage.object3D.parent) this.luggage.object3D.parent.remove(this.luggage.object3D);
-
-          // Volta para a scene
-          this.el.sceneEl.object3D.add(this.luggage.object3D);
-
-          this.luggage.setAttribute("position", `${this.spawnPos.x} ${this.spawnPos.y} ${this.spawnPos.z}`);
-          this.luggage.setAttribute("rotation", `${this.spawnRot.x} ${this.spawnRot.y} ${this.spawnRot.z}`);
-          this.luggage.setAttribute("visible", "true");
-        },
-
-        pickUp: function () {
-          if (!this.cam || !this.luggage) return;
-
-          this.held = true;
-
-          // Remove do parent atual e adiciona à camera
-          if (this.luggage.object3D.parent) this.luggage.object3D.parent.remove(this.luggage.object3D);
-          this.cam.object3D.add(this.luggage.object3D);
-
-          this.luggage.object3D.position.set(this.holdingOffset.x, this.holdingOffset.y, this.holdingOffset.z);
-          this.luggage.object3D.rotation.set(0, 0, 0);
-
-          if (this.hudTarget) {
-            this.hudTarget.textContent = "🧳 Pegaste na mala. Leva-a à segurança e larga no círculo verde (E ou click).";
-          }
-        },
-
-        drop: function () {
-          if (!this.cam || !this.luggage) return;
-
-          const worldPos = new THREE.Vector3();
-          this.luggage.object3D.getWorldPosition(worldPos);
-
-          this.cam.object3D.remove(this.luggage.object3D);
-          this.el.sceneEl.object3D.add(this.luggage.object3D);
-
-          this.luggage.object3D.position.set(worldPos.x, 0, worldPos.z);
-          this.held = false;
-
-          if (this.isOnDropzone()) this.snapToDropzoneAndValidate();
-          else if (this.hudTarget) this.hudTarget.textContent = "📦 Largaste a mala. (Dica: larga no círculo verde.)";
-        },
-
-        isOnDropzone: function () {
-          if (!this.dropzone || !this.luggage) return false;
-
-          const dz = new THREE.Vector3();
-          const lp = new THREE.Vector3();
-
-          this.dropzone.object3D.getWorldPosition(dz);
-          this.luggage.object3D.getWorldPosition(lp);
-
-          const dx = dz.x - lp.x;
-          const dzv = dz.z - lp.z;
-          const d = Math.sqrt(dx * dx + dzv * dzv);
-
-          return d < 1.0;
-        },
-
-        snapToDropzoneAndValidate: function () {
-          if (!this.dropzone || !this.luggage) return;
-
-          const dz = this.dropzone.getAttribute("position");
-          this.luggage.setAttribute("position", `${dz.x} ${dz.y + 0.25} ${dz.z}`);
-
-          // Se wayfinding existir e ainda não estiver validado, valida
-          if (this.wf && this.wf.state && !this.wf.state.securityPassed) {
-            this.wf.passSecurity();
-          }
-
-          if (this.hudTarget) {
-            this.hudTarget.textContent = "✅ Bagagem validada! Podes pegar na mala e seguir para os Gates.";
-          }
+            ambienceEl.addEventListener("sound-loaded", () => {
+              // se já desbloqueaste, isto vai tocar logo
+              forcePlayWhenReady();
+            });
+          });
         },
       });
 
 
 
+      // =====================================================
+      // Carry System (mala + mochila) — valida sempre no scanner
+      // =====================================================
+      AFRAME.registerComponent("carry-system", {
+        init: function () {
+          this.held = false;
+          this.activeItemId = null; // "luggage" | "backpack"
+          this.heldItemId = null;
+
+          this.holdingOffset = { x: 0.9, y: -0.6, z: -0.9 };
+
+          this.el.sceneEl.addEventListener("loaded", () => {
+            this.wf = this.el.sceneEl.components.wayfinding;
+
+            this.cam = document.getElementById("cam");
+            this.hudTarget = document.getElementById("hudTarget");
+            this.dropzone = document.getElementById("securityDropzone");
+
+            this.items = {
+              luggage: document.getElementById("luggage"),
+              backpack: document.getElementById("backpack"),
+            };
+
+            // Guardar spawn de ambos
+            this.spawn = {};
+            Object.entries(this.items).forEach(([id, el]) => {
+              if (!el) return;
+              const p = el.getAttribute("position");
+              const r = el.getAttribute("rotation") || { x: 0, y: 0, z: 0 };
+              this.spawn[id] = { pos: { ...p }, rot: { ...r } };
+
+              el.addEventListener("click", () => this.onItemClick(id));
+            });
+
+            // tecla E para largar
+            window.addEventListener("keydown", (e) => {
+              if (e.key.toLowerCase() === "e" && this.held) this.drop();
+            });
+
+            // por defeito: esconde tudo
+            this.hideAllItems();
+          });
+        },
+
+        hideAllItems: function () {
+          Object.values(this.items).forEach((el) => {
+            if (el) el.setAttribute("visible", "false");
+          });
+          this.activeItemId = null;
+          this.held = false;
+          this.heldItemId = null;
+        },
+
+        setActiveItem: function (id) {
+          this.activeItemId = id;
+
+          Object.entries(this.items).forEach(([key, el]) => {
+            if (!el) return;
+            el.setAttribute("visible", key === id ? "true" : "false");
+          });
+
+          // se estava a segurar algo, solta estado (segurança)
+          this.held = false;
+          this.heldItemId = null;
+        },
+
+        respawnActiveItem: function () {
+          const id = this.activeItemId;
+          const el = id ? this.items[id] : null;
+          if (!el || !this.spawn[id]) return;
+
+          this.held = false;
+          this.heldItemId = null;
+
+          if (el.object3D.parent) el.object3D.parent.remove(el.object3D);
+          this.el.sceneEl.object3D.add(el.object3D);
+
+          el.setAttribute("position", `${this.spawn[id].pos.x} ${this.spawn[id].pos.y} ${this.spawn[id].pos.z}`);
+          el.setAttribute("rotation", `${this.spawn[id].rot.x} ${this.spawn[id].rot.y} ${this.spawn[id].rot.z}`);
+          el.setAttribute("visible", "true");
+        },
+
+        onItemClick: function (id) {
+          // bloqueios do fluxo
+          if (this.wf && this.wf.state) {
+            if (!this.wf.state.targetGate) {
+              if (this.hudTarget) this.hudTarget.textContent = "⚠️ Faz CHECK-IN e escolhe um Gate primeiro.";
+              return;
+            }
+            if (!this.wf.state.baggageType) {
+              if (this.hudTarget) this.hudTarget.textContent = "⚠️ Escolhe o tipo de bagagem (MÃO ou PORÃO).";
+              return;
+            }
+            if (this.wf.state.requiredItem && this.wf.state.requiredItem !== id) {
+              if (this.hudTarget) this.hudTarget.textContent = "ℹ️ Esse não é o item que tens de validar agora.";
+              return;
+            }
+          }
+
+          if (!this.held) this.pickUp(id);
+          else this.drop();
+        },
+
+        pickUp: function (id) {
+          const el = this.items[id];
+          if (!this.cam || !el) return;
+
+          this.held = true;
+          this.heldItemId = id;
+
+          if (el.object3D.parent) el.object3D.parent.remove(el.object3D);
+          this.cam.object3D.add(el.object3D);
+
+          el.object3D.position.set(this.holdingOffset.x, this.holdingOffset.y, this.holdingOffset.z);
+          el.object3D.rotation.set(0, 0, 0);
+
+          if (this.hudTarget) this.hudTarget.textContent = "📦 Leva o item ao scanner (círculo verde) e larga (E ou click).";
+        },
+
+        drop: function () {
+          const id = this.heldItemId;
+          const el = id ? this.items[id] : null;
+          if (!this.cam || !el) return;
+
+          const worldPos = new THREE.Vector3();
+          el.object3D.getWorldPosition(worldPos);
+
+          this.cam.object3D.remove(el.object3D);
+          this.el.sceneEl.object3D.add(el.object3D);
+
+          // encostar ao chão (se precisares: ajusta este Y)
+          el.object3D.position.set(worldPos.x, 0, worldPos.z);
+
+          this.held = false;
+          this.heldItemId = null;
+
+          // 🔧 MUITO IMPORTANTE: força atualização de world matrices no mesmo frame
+          el.object3D.updateMatrixWorld(true);
+          if (this.dropzone) this.dropzone.object3D.updateMatrixWorld(true);
+          if (this.isOnDropzone(el)) {
+            this.snapToDropzoneAndValidate(el);
+          } else {
+            if (this.hudTarget) this.hudTarget.textContent = "📦 Largaste o item. (Dica: larga no círculo verde.)";
+          }
+        },
+
+        isOnDropzone: function (el) {
+          if (!this.dropzone || !el) return false;
+
+          const dz = new THREE.Vector3();
+          const lp = new THREE.Vector3();
+
+          this.dropzone.object3D.getWorldPosition(dz);
+          el.object3D.getWorldPosition(lp);
+
+          const dx = dz.x - lp.x;
+          const dzv = dz.z - lp.z;
+          const d = Math.sqrt(dx * dx + dzv * dzv);
+
+          return d < 1.35;
+        },
+
+        snapToDropzoneAndValidate: function (el) {
+          if (!this.dropzone || !el) return;
+
+          const dz = this.dropzone.getAttribute("position");
+          el.setAttribute("position", `${dz.x} ${dz.y + 0.25} ${dz.z}`);
+
+          // já validado? não repete
+          if (this.wf && this.wf.state && this.wf.state.securityPassed) return;
+
+          // HUD: scanning
+          if (this.hudTarget) this.hudTarget.textContent = "🔎 A analisar no raio-X...";
+
+          // SFX real do scanner
+          const sfx = document.getElementById("scannerSfxEntity")?.components?.sound;
+          if (sfx) {
+            sfx.stopSound();
+            sfx.playSound();
+}
+
+
+
+
+          // valida 1 segundo depois
+          if (this.wf) this.wf.passSecurity(1000);
+        },
+      });
     </script>
+
 
     <style>
       html, body { margin: 0; height: 100%; overflow: hidden; }
@@ -374,9 +537,9 @@
       <br/><span id="hudTarget">Entra no aeroporto e faz Check-in.</span>
     </div>
 
-    <a-scene wayfinding luggage-system
-            renderer="colorManagement: true; physicallyCorrectLights: true;"
-            shadow="type: pcfsoft">
+    <a-scene wayfinding carry-system audio-unlock
+         renderer="colorManagement: true; physicallyCorrectLights: true;"
+         shadow="type: pcfsoft">
       <a-sky id="main-sky" color="#87CEEB"></a-sky>
 
 
@@ -386,8 +549,7 @@
         <img id="asfalto-tex" src="https://cdn.aframe.io/a-painter/images/floor.jpg">
 
         <a-asset-item id="modelo-mala" src="luggage.glb"></a-asset-item>
-
-
+        <a-asset-item id="modelo-backpack" src="backpack.glb"></a-asset-item>
         <a-asset-item id="modelo-balcao" src="airport_check_in_desk.glb"></a-asset-item>
         <a-asset-item id="modelo-security" src="airport_security_check.glb"></a-asset-item>
 
@@ -395,11 +557,24 @@
         <a-asset-item id="modelo-cadeira" src="waiting_chair.glb"></a-asset-item>
         <a-asset-item id="modelo-gate-sign" src="airport_boarding_gate_sign.glb"></a-asset-item>
 
-        <audio id="airportAmbience" src="https://cdn.pixabay.com/download/audio/2022/03/24/audio_3079b47e40.mp3" preload="auto"></audio>
-        <audio id="successClip" src="https://cdn.pixabay.com/download/audio/2021/08/04/audio_0625c153e1.mp3" preload="auto"></audio>
+        <audio id="airportAmbience"
+       src="https://cdn.pixabay.com/download/audio/2022/03/24/audio_3079b47e40.mp3"
+       preload="auto"
+       crossorigin="anonymous"></audio>
+
+        <audio id="successClip"
+              src="https://cdn.pixabay.com/download/audio/2021/08/04/audio_0625c153e1.mp3"
+              preload="auto"
+              crossorigin="anonymous"></audio>
+
+        <audio id="scannerSfx" src="scannerSound.wav" preload="auto"></audio>
+
       </a-assets>
 
-      <a-entity sound="src: #airportAmbience; autoplay: true; loop: true; volume: 0.5"></a-entity>
+      
+
+      <a-entity id="ambience" sound="src: #airportAmbience; autoplay: true; loop: true; volume: 0.5"></a-entity>
+
       <a-entity id="soundSuccess" sound="src: #successClip; volume: 1.0; poolSize: 5"></a-entity>
 
       <a-entity light="type: directional; castShadow: true; intensity: 1.5; shadowCameraVisible: false;"
@@ -495,6 +670,17 @@
         </a-entity>
       </a-entity>
 
+      <!-- MOCHILA (item pessoal para quando escolhe PORÃO) -->
+      <a-entity id="backpack" class="clickable"
+                position="3.35 0 20.866" rotation="0 90 0" visible="false">
+        <a-entity class="clickable"
+                  gltf-model="#modelo-backpack"
+                  scale="1.5 1.5 1.5"
+                  rotation="0 0 0">
+        </a-entity>
+      </a-entity>
+
+
 
 
       <!-- =========================
@@ -529,6 +715,26 @@
         </a-entity>
       </a-entity>
 
+      <!-- PAINEL: Escolher tipo de bagagem -->
+      <a-entity id="baggagePanel" position="6.632 0.6 21.0" rotation="0 270 0">
+        <a-plane width="2.4" height="1.1" color="#111" opacity="0.85"></a-plane>
+
+        <a-text value="Bagagem" align="center" position="0 0.4 0.01" width="6" color="#fff"></a-text>
+
+        <!-- Mala de Mão -->
+        <a-entity class="bagBtn clickable" data-bag="hand" position="-0.6 -0.05 0.02">
+          <a-plane class="clickable" width="1.0" height="0.35" color="#f1c40f"></a-plane>
+          <a-text value="MÃO" align="center" position="0 0 0.01" width="6" color="#111"></a-text>
+        </a-entity>
+
+        <!-- Mala de Porão -->
+        <a-entity class="bagBtn clickable" data-bag="checked" position="0.6 -0.05 0.02">
+          <a-plane class="clickable" width="1.0" height="0.35" color="#95a5a6"></a-plane>
+          <a-text value="PORÃO" align="center" position="0 0 0.01" width="6" color="#111"></a-text>
+        </a-entity>
+      </a-entity>
+
+
       <!-- =========================
            SECURITY (mantida)
            ========================= -->
@@ -548,6 +754,15 @@
 
         <a-entity gltf-model="#modelo-security" position="-2.712 0 0" scale="0.9 0.9 0.9" rotation="0 90 0"></a-entity>
         <a-entity gltf-model="#modelo-security" position="2.712 0 0" scale="0.9 0.9 0.9" rotation="0 270 0"></a-entity>
+
+        <a-entity
+          id="scannerSfxEntity"
+          position="2.771 1.2 1.625"
+          sound="src: #scannerSfx; volume: 0.9; poolSize: 5; positional: true; refDistance: 2; distanceModel: inverse"
+        ></a-entity>
+
+
+
 
         <!-- DROPZONE DO SCANNER (onde tens de largar a mala) -->
         <a-cylinder id="securityDropzone"
