@@ -24,6 +24,8 @@ AFRAME.registerComponent("wayfinding", {
     this.state = {
       checkinMode: null,                 // "online" | "airport"
       started: false,
+      gateArrived: false,
+
 
       handWeight: 0,
       hasCheckedBag: false,              // se existe mala de porão
@@ -77,11 +79,31 @@ AFRAME.registerComponent("wayfinding", {
       this.successSound = document.getElementById("soundSuccess");
       this.wall = document.getElementById("securityWall");
       this.wallText = document.getElementById("securityWallText");
+      this.barrier = document.getElementById("securityBarrier");
+
 
       this.checkinDeskHit = document.getElementById("checkinDeskHit");
       this.bagDropzone = document.getElementById("baggageDropzone");
       this.securityDropzone = document.getElementById("securityDropzone");
       this.bpReader = document.getElementById("bpReader");
+
+      this.sky = document.getElementById("main-sky");
+
+      // guardar estado original do sky (para voltar atrás)
+      this._skyDefault = {
+        color: this.sky?.getAttribute("color"),
+        src: this.sky?.getAttribute("src"),
+      };
+
+      this._previewOn = false;
+
+      // refs dos textos do preview
+      this.previewTitle = document.getElementById("previewTitle");
+      this.previewHint = document.getElementById("previewHint");
+
+      // tenta já atualizar (mesmo que ainda não haja destino)
+      this.updateDestinationPreviewUI?.();
+
 
       this.checkinDeskHit?.addEventListener("click", () => this.onDeskClick());
 
@@ -94,15 +116,167 @@ AFRAME.registerComponent("wayfinding", {
       // Bag Drop abre “despachar”
       this.bagDropzone?.addEventListener("click", () => this.onBagDropClick());
 
-      this.setObjective("✈️ Configura o fluxo no painel e clica Começar.", null);
+      this.setObjective("✈️ Configure the workflow in the panel and click Start.", null);
       this.updateBPUI();
 
       // ✅ painel inicial 3D (bind + refresh)
       this.bindFlowPanelButtons();
       this.refreshFlowPanel();
+      this.updateCheckinHint?.();
+
 
     });
   },
+
+
+  updateCheckinHint: function () {
+  const isAirport = this.ui?.mode === "airport";
+  const notCheckedIn = !this.state.checkedIn;
+
+  const show = isAirport && notCheckedIn;
+
+  document.getElementById("checkinHint")?.setAttribute("visible", show);
+  document.getElementById("checkinHintBg")?.setAttribute("visible", show);
+},
+
+
+  playScannerSfx: function () {
+    const sfx = document.getElementById("scannerSfxEntity");
+    sfx?.components?.sound?.stopSound?.(); // garante replay imediato
+    sfx?.components?.sound?.playSound?.();
+  },
+
+
+  getPanoForDestination: function () {
+  const dest = (this.state.destination || "").toLowerCase();
+
+  if (dest.includes("paris")) return "#panoParis";
+  if (dest.includes("madrid")) return "#panoMadrid";
+  if (dest.includes("londres") || dest.includes("london")) return "#panoLondon";
+
+  return null;
+},
+
+updateDestinationPreviewUI: function () {
+  const dest = this.state.destination || "—";
+  if (this.previewTitle) this.previewTitle.setAttribute("value", `PREVIEW: ${dest}`);
+},
+
+toggleDestinationPreview: function () {
+  if (!this.sky) this.sky = document.getElementById("main-sky");
+  if (!this.sky) return;
+
+  const pano = this.getPanoForDestination?.();
+
+  // se ainda não tens destino / pano, avisa no HUD
+  if (!pano) {
+    this.setObjective?.("ℹ️ Ainda não há destino definido para preview.", null);
+    return;
+  }
+
+  this._previewOn = !this._previewOn;
+
+  if (this._previewOn) {
+    // ligar panorama
+    this.sky.setAttribute("src", pano);
+    // opcional: se quiseres esconder cor quando há src, não é preciso
+    this.setObjective?.(`🌍 Preview do destino: ${this.state.destination}`, null);
+
+    if (this.previewHint) this.previewHint.setAttribute("value", "(Clica novamente para voltar)");
+  } else {
+    // voltar ao céu original
+    if (this._skyDefault?.src) this.sky.setAttribute("src", this._skyDefault.src);
+    else this.sky.removeAttribute("src");
+
+    if (this._skyDefault?.color) this.sky.setAttribute("color", this._skyDefault.color);
+    else this.sky.setAttribute("color", "#87CEEB");
+
+    this.setObjective?.("✅ Voltaste ao aeroporto.", null);
+    if (this.previewHint) this.previewHint.setAttribute("value", "(Clica para ver o destino)");
+  }
+},
+
+tick: function () {
+  // ----------------------------
+  // BLOQUEIO PARA OS GATES (antes da segurança)
+  // ----------------------------
+  if (!this.state.securityPassed) {
+    const cam = document.getElementById("cam");
+    if (!cam) return;
+
+    // onde está a parede (world Z)
+    const wall = document.getElementById("securityWall");
+    const wallWorld = wall
+      ? wall.object3D.getWorldPosition(new THREE.Vector3())
+      : new THREE.Vector3(0, 0, 0);
+
+    // limite: um bocadinho "antes" da parede (do lado permitido)
+    // ajusta o +0.25 se precisares (0.15 a 0.40 é normal)
+    const limitZ = wallWorld.z + 0.25;
+
+    // posição atual da cam em world
+    const camWorld = cam.object3D.getWorldPosition(new THREE.Vector3());
+
+    // se a cam está a tentar passar para o lado proibido (z menor que a parede),
+    // empurra só o Z de volta para o limite
+    if (camWorld.z < limitZ) {
+      const targetWorld = new THREE.Vector3(camWorld.x, camWorld.y, limitZ);
+
+      // converter world -> local (para mexer na position correta mesmo com parents)
+      const parent = cam.object3D.parent;
+      if (parent) {
+        parent.worldToLocal(targetWorld);
+        cam.object3D.position.z = targetWorld.z; // só ajusta Z
+      } else {
+        cam.object3D.position.z += (limitZ - camWorld.z); // fallback
+      }
+    }
+
+    return; // antes da segurança não checamos gate
+  }
+
+  // ----------------------------
+  // CHEGADA AO GATE (depois da segurança)
+  // ----------------------------
+  if (!this.state.gate || this.state.gateArrived) return;
+
+  const cam = document.getElementById("cam");
+  const gateId =
+    this.state.gate === "A1" ? "gateA1" :
+    this.state.gate === "A2" ? "gateA2" : "gateA3";
+
+  const gateEl = document.getElementById(gateId);
+  if (!cam || !gateEl) return;
+
+  const targetBoxId = this.getGateBoxId(this.state.gate);
+  if (targetBoxId) {
+    const cur = document.getElementById(targetBoxId)?.getAttribute("color");
+    if (cur === "#d8b88f") this.setGateColor(this.state.gate, "#3498db");
+  }
+
+  const p = cam.object3D.getWorldPosition(new THREE.Vector3());
+  const g = gateEl.object3D.getWorldPosition(new THREE.Vector3());
+  const dist = p.distanceTo(g);
+
+  if (dist < 2.5) {
+    this.state.gateArrived = true;
+    this.markGateAsArrived();
+
+    this.setObjective?.(
+      `🎉 You arrived at Gate ${this.state.gate}! Have a good trip to ${this.state.destination}!`,
+      null
+    );
+
+    this.successSound?.components?.sound?.playSound?.();
+  }
+},
+
+
+
+
+
+
+
 
   // -------- UI Objective + BP ----------
   setObjective: function (text, targetId = null) {
@@ -141,6 +315,8 @@ AFRAME.registerComponent("wayfinding", {
 
     this.updateBPUI();
     this.successSound?.components?.sound?.playSound?.();
+    this.updateDestinationPreviewUI?.();
+
   },
 
 updateBPUI: function () {
@@ -149,7 +325,7 @@ updateBPUI: function () {
 
   const gate = this.state.gate ?? "—";
   const dest = this.state.destination ?? "—";
-  if (l1) l1.textContent = `Gate: ${gate} | Destino: ${dest}`;
+  if (l1) l1.textContent = `Gate: ${gate} | Destination: ${dest}`;
 
   const bpOk = this.state.boardingPassIssued ? "✅" : "⛔";
   const idOk = this.state.checkinMode === "airport"
@@ -192,7 +368,7 @@ updateBPUI: function () {
   const secOk = this.state.securityPassed ? "✅" : "⛔";
 
   if (l2) l2.textContent =
-    `BP: ${bpOk} • Identificação: ${idOk} • Porão: ${porao} • BP mostrado: ${bpShown} • Scanner: ${scanOk ? "✅" : "⛔"} • Segurança: ${secOk}`;
+    `BP: ${bpOk} • Identification: ${idOk} • Cargo Hold: ${porao} • BP shown: ${bpShown} • Scanner: ${scanOk ? "✅" : "⛔"} • Security: ${secOk}`;
 },
 
 
@@ -206,10 +382,12 @@ bindFlowPanelButtons: function () {
   $("uiModeOnline")?.addEventListener("click", () => {
     this.ui.mode = "online";
     this.refreshFlowPanel();
+    this.updateCheckinHint?.();
   });
   $("uiModeAirport")?.addEventListener("click", () => {
     this.ui.mode = "airport";
     this.refreshFlowPanel();
+    this.updateCheckinHint?.();
   });
 
   // toggles pertences
@@ -263,26 +441,92 @@ refreshFlowPanel: function () {
   const $ = (id) => document.getElementById(id);
 
   // textos SIM/NÃO
-  $("uiHasBackpackTxt")?.setAttribute("value", `🎒 Mochila: ${this.ui.hasBackpack ? "SIM" : "NÃO"}`);
-  $("uiHasPhoneTxt")?.setAttribute("value", `📱 Telemóvel: ${this.ui.hasPhone ? "SIM" : "NÃO"}`);
-  $("uiHasLuggageTxt")?.setAttribute("value", `🧳 Mala: ${this.ui.hasLuggage ? "SIM" : "NÃO"}`);
+  $("uiHasBackpackTxt")?.setAttribute(
+    "value",
+    `🎒 Backpack: ${this.ui.hasBackpack ? "YES" : "NO"}`
+  );
+  $("uiHasPhoneTxt")?.setAttribute(
+    "value",
+    `📱 Phone: ${this.ui.hasPhone ? "YES" : "NO"}`
+  );
+  $("uiHasLuggageTxt")?.setAttribute(
+    "value",
+    `🧳 Luggage: ${this.ui.hasLuggage ? "YES" : "NO"}`
+  );
 
-  $("uiHandWLabel")?.setAttribute("value", `Peso mochila: ${(this.ui.handWeight || 0).toFixed(1)}kg`);
-  $("uiLuggWLabel")?.setAttribute("value", `Peso mala: ${(this.ui.luggageWeight || 0).toFixed(1)}kg`);
+  $("uiHandWLabel")?.setAttribute(
+    "value",
+    `Backpack weight: ${(this.ui.handWeight || 0).toFixed(1)}kg`
+  );
+  $("uiLuggWLabel")?.setAttribute(
+    "value",
+    `Luggage weight: ${(this.ui.luggageWeight || 0).toFixed(1)}kg`
+  );
 
   // online checked visível só no modo online
-  const onlineRow = document.getElementById("uiOnlineChecked");
+  const onlineRow = $("uiOnlineChecked");
   if (onlineRow) onlineRow.setAttribute("visible", this.ui.mode === "online");
+
   $("uiOnlineCheckedTxt")?.setAttribute(
     "value",
-    `(Online) Despachar mala: ${this.ui.onlineChecked ? "SIM" : "NÃO"}`
+    `(Online) Dispatch baggage: ${this.ui.onlineChecked ? "YES" : "NO"}`
   );
 
   // warn
   let warn = "";
-  if (!this.ui.mode) warn = "⚠️ Escolhe o modo (Online ou Aeroporto).";
+  if (!this.ui.mode) warn = "⚠️ Choose mode (Online or Airport).";
   $("uiFlowWarn")?.setAttribute("value", warn);
+
+  // ----------------------------
+  // CORES / ESTADO (feedback visual)
+  // ----------------------------
+  const ACTIVE = "#3498db";     // selecionado (azul)
+  const INACTIVE = "#ffffff";   // neutro
+  const ON = "#2ecc71";         // toggle ligado (verde)
+  const OFF = "#ffffff";        // toggle desligado (cinza)
+
+  // helper inline (não dependes de teres setActivePair definido)
+  const set = (id, color) => this.setBtnColor?.(id, color);
+
+  // modo (online/airport)
+  if (this.ui.mode === "online") {
+    set("uiModeOnline", ACTIVE);
+    set("uiModeAirport", INACTIVE);
+  } else if (this.ui.mode === "airport") {
+    set("uiModeOnline", INACTIVE);
+    set("uiModeAirport", ACTIVE);
+  } else {
+    set("uiModeOnline", INACTIVE);
+    set("uiModeAirport", INACTIVE);
+  }
+
+  // toggles pertences (Backpack/Phone/Luggage)
+  set("uiHasBackpack", this.ui.hasBackpack ? ON : OFF);
+  set("uiHasPhone", this.ui.hasPhone ? ON : OFF);
+  set("uiHasLuggage", this.ui.hasLuggage ? ON : OFF);
+
+  // online checked (só quando faz sentido)
+  const canOnlineCheck = (this.ui.mode === "online") && !!this.ui.hasLuggage;
+  if (canOnlineCheck) {
+    set("uiOnlineChecked", this.ui.onlineChecked ? ON : OFF);
+  } else {
+    // se está escondido ou não aplicável, mete neutro
+    set("uiOnlineChecked", INACTIVE);
+  }
 },
+
+
+setBtnColor: function (id, color) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.setAttribute("color", color);
+},
+
+setActivePair: function (idA, idB, activeId, activeColor, inactiveColor) {
+  this.setBtnColor(idA, idA === activeId ? activeColor : inactiveColor);
+  this.setBtnColor(idB, idB === activeId ? activeColor : inactiveColor);
+},
+
 
 
 startFlowFromPanel: function () {
@@ -342,12 +586,12 @@ startFlowFromPanel: function () {
     if (!this.state.boardingPassIssued) this.issueBoardingPass();
 
     if (this.state.checkedItems.length > 0) {
-      this.setObjective("🧳 Vai ao BAG DROP (círculo roxo) para despachar.", "baggageDropzone");
+      this.setObjective("🧳 Go to Bag Drop to dispatch your bags. (purple circle)", "baggageDropzone");
     } else {
-      this.setObjective("🔐 Vai à segurança (círculo verde) e completa o scanner.", "securityDropzone");
+      this.setObjective("🔐 Go to security (green circle) and complete the scanner.", "securityDropzone");
     }
   } else {
-    this.setObjective("🏢 Vai ao balcão de check-in e insere os teus dados.", "checkinDeskHit");
+    this.setObjective("🏢 Go to the check-in desk and enter your details.", "checkinDeskHit");
   }
 
   this.updateBPUI();
@@ -381,7 +625,10 @@ bindBagDropPanelButtons: function () {
 refreshBagDropPanel: function () {
   const checked = Array.isArray(this.state.checkedItems) ? this.state.checkedItems : [];
   const carry = this.getCarrySys();
+
   const t = document.getElementById("uiBagDropStatus");
+  const btnL = document.getElementById("uiDropLuggage");
+  const btnB = document.getElementById("uiDropBackpack");
 
   const hasL = checked.includes("luggage");
   const hasB = checked.includes("backpack");
@@ -393,13 +640,24 @@ refreshBagDropPanel: function () {
   document.getElementById("uiDropBackpack")?.setAttribute("visible", hasB);
   document.getElementById("uiDropBackpackTxt")?.setAttribute("visible", hasB);
 
-  const falta = checked.map(x => (x === "luggage" ? "mala" : "mochila")).join(" + ");
-  if (t) t.setAttribute("value", `Falta despachar: ${falta}`);
+  // status legível
+  const falta = [];
+  if (hasL) falta.push("luggage");
+  if (hasB) falta.push("backpack");
 
-  // se por acaso já não tens um item no inventário, avisa no objective
-  if (hasL && !carry?.inventory?.luggage) this.setObjective("⚠️ Não tens a mala no inventário.", null);
-  if (hasB && !carry?.inventory?.backpack) this.setObjective("⚠️ Não tens a mochila no inventário.", null);
+  if (t) t.setAttribute("value", falta.length ? `Missing to dispatch: ${falta.join(" + ")}` : "Nothing to dispatch.");
+
+  // cores úteis (se o item já não está no inventário, “disabled”)
+  const ACTIVE = "#8e44ad";
+  const DISABLED = "#7f8c8d";
+
+  if (hasL) btnL?.setAttribute("color", carry?.inventory?.luggage ? ACTIVE : DISABLED);
+  if (hasB) btnB?.setAttribute("color", carry?.inventory?.backpack ? ACTIVE : DISABLED);
+
+  if (hasL && !carry?.inventory?.luggage) this.setObjective("You don't have the luggage in the inventory (I).", null);
+  if (hasB && !carry?.inventory?.backpack) this.setObjective("You don't have the backpack in the inventory (I).", null);
 },
+
 
 dropSpecificToHold: function (item) {
   this.state.checkedItems = this.state.checkedItems || [];
@@ -412,8 +670,8 @@ dropSpecificToHold: function (item) {
 
   // tem de estar no inventário
   if (!carry?.inventory?.[item]) {
-    const nome = item === "luggage" ? "mala" : "mochila";
-    this.setObjective(`⚠️ Não tens ${nome} no inventário. Abre o inventário (I).`, null);
+    const name = item === "luggage" ? "luggage" : "backpack";
+    this.setObjective(`⚠️ You don't have the ${name} in the inventory. Open the inventory (I).`, null);
     carry?.openInventoryUI?.();
     return;
   }
@@ -432,167 +690,16 @@ dropSpecificToHold: function (item) {
     this.state.hasCheckedBag = false;
 
     document.getElementById("uiBagDropPanel")?.setAttribute("visible", "false");
-    this.setObjective("✅ Tudo despachado. Agora vai à segurança.", "securityDropzone");
+    this.setObjective("✅ Everything dispatched. Now go to security.", "securityDropzone");
   } else {
     this.state.checkedIn = false;
     this.state.hasCheckedBag = true;
-    this.setObjective("✅ Item despachado. Falta despachar o resto.", "baggageDropzone");
+    this.setObjective("✅ Item dispatched. Still need to dispatch the rest.", "baggageDropzone");
     this.refreshBagDropPanel();
   }
 
   this.updateBPUI();
 },
-
-
-
-
-
-
-
-
-  // -------- Modal Inicial (online/aeroporto + peso + porão online) ----------
-  bindFlowModal: function () {
-    const modal = document.getElementById("flowModal");
-    const bOnline = document.getElementById("mOnline");
-    const bAirport = document.getElementById("mAirport");
-    const start = document.getElementById("flowStart");
-    const warn = document.getElementById("flowWarn");
-    const onlineExtra = document.getElementById("onlineExtra");
-    const handWeight = document.getElementById("handWeight");
-    const luggageWeight = document.getElementById("luggageWeight");
-
-
-    if (!modal || !bOnline || !bAirport || !start || !warn || !onlineExtra || !handWeight) {
-      setTimeout(() => this.bindFlowModal(), 50);
-      return;
-    }
-
-    const setMode = (mode) => {
-      this.state.checkinMode = mode;
-      onlineExtra.style.display = (mode === "online") ? "block" : "none";
-      warn.textContent = `Modo selecionado: ${mode === "online" ? "Online" : "Aeroporto"}`;
-    };
-
-    const syncOnlineCheckedUI = () => {
-    const hasLuggageNow = document.getElementById("hasLuggage")?.checked ?? false;
-    const onlineChecked = document.getElementById("onlineChecked");
-
-    if (!onlineChecked) return;
-
-    if (!hasLuggageNow) {
-      onlineChecked.checked = false;
-      onlineChecked.disabled = true;
-    } else {
-      onlineChecked.disabled = false;
-    }
-  };
-
-  // sempre que mexes na mala
-  document.getElementById("hasLuggage")?.addEventListener("change", syncOnlineCheckedUI);
-
-  // quando escolhes online mostra e sincroniza
-  bOnline.addEventListener("click", () => {
-    setMode("online");
-    syncOnlineCheckedUI();
-  });
-
-    bAirport.addEventListener("click", () => setMode("airport"));
-
-start.addEventListener("click", () => {
-  if (!this.state.checkinMode) {
-    warn.textContent = "⚠️ Escolhe primeiro: Online ou Aeroporto.";
-    return;
-  }
-
-  // ✅ Ler pertences NO MOMENTO do click
-  const hasBackpack = document.getElementById("hasBackpack")?.checked ?? false;
-  const hasPhone = document.getElementById("hasPhone")?.checked ?? false;
-  const hasLuggage = document.getElementById("hasLuggage")?.checked ?? false;
-
-  const lw = parseFloat(luggageWeight?.value || "0") || 0;
-  const w = parseFloat(handWeight?.value || "0") || 0;
-
-  // garantir state
-  this.state.items = this.state.items || { backpack: false, phone: false, luggage: false };
-  this.state.security = this.state.security || {
-    boardingPassShown: false,
-    scannedBackpack: false,
-    scannedPhone: false,
-    scannedLuggage: false,
-  };
-
-  this.state.items.backpack = !!hasBackpack;
-  this.state.items.phone = !!hasPhone;
-  this.state.items.luggage = !!hasLuggage;
-
-  // pesos
-  this.state.handWeight = this.state.items.backpack ? w : 0;
-  this.state.luggageWeight = this.state.items.luggage ? lw : 0;
-
-  // reset
-  this.state.checkedItems = [];
-  this.state.checkedIn = false;
-  warn.textContent = "";
-
-
-  // regras
-  const forcedByLuggage = this.state.items.luggage && this.state.luggageWeight > 20;
-  const forcedByBackpack = this.state.items.backpack && this.state.handWeight > 10;
-  const wantsChecked = document.getElementById("onlineChecked")?.checked ?? false;
-
-  if (this.state.checkinMode === "online") {
-    // obrigatórios por peso
-    if (forcedByLuggage) {
-      this.state.checkedItems.push("luggage");
-      warn.textContent = "⚠️ Mala > 20kg: porão obrigatório.";
-    }
-    if (forcedByBackpack) {
-      this.state.checkedItems.push("backpack");
-      warn.textContent = warn.textContent || "⚠️ Mochila > 10kg: porão obrigatório.";
-    }
-
-    // opcional (user quer despachar mala)
-    if (!forcedByLuggage && this.state.items.luggage && wantsChecked) {
-      this.state.checkedItems.push("luggage");
-    }
-  } else {
-    // airport: decisão no balcão
-    this.state.checkedItems = [];
-  }
-  this.state.hasCheckedBag = this.state.checkedItems.length > 0;
-
-
-
-  // ✅ FECHAR MODAL + INICIAR FLUXO (isto faltava!)
-  modal.style.display = "none";
-  this.state.started = true;
-
-  // ✅ sincroniza inventário (itens começam no inventário)
-  const carry = this.getCarrySys();
-  carry?.syncFromFlowState?.(this.state);
-
-  // objetivos
-  const needsBagDrop = (this.state.checkedItems?.length || 0) > 0;
-
-  if (this.state.checkinMode === "online") {
-    if (!this.state.boardingPassIssued) this.issueBoardingPass();
-
-    if (needsBagDrop) {
-      this.setObjective("🧳 Vai ao BAG DROP (círculo roxo) para despachar o item.", "baggageDropzone");
-    } else {
-      this.setObjective("🔐 Vai à segurança (círculo verde) e completa o scanner.", "securityDropzone");
-    }
-  } else {
-    this.setObjective("🏢 Vai ao balcão de check-in e insere os teus dados.", "checkinDeskHit");
-  }
-
-  this.updateBPUI();
-});
-
-
-    syncOnlineCheckedUI();
-
-  },
 
 
   // -------- Balcão (airport): inserir dados + decidir porão (com regra) ----------
@@ -608,89 +715,13 @@ start.addEventListener("click", () => {
     // online: balcão pode só orientar (opcional)
     if (this.state.checkinMode === "online") {
       if (this.state.hasCheckedBag && !this.state.checkedIn) {
-        this.setObjective("🧳 Vai ao BAG DROP para despachar a mala.", "baggageDropzone");
+        this.setObjective("🧳 Go to BAG DROP to dispatch the luggage.", "baggageDropzone");
       } else {
-        this.setObjective("🔐 Vai à segurança e completa o scanner.", "securityDropzone");
+        this.setObjective("🔐 Go to security and complete the scanner.", "securityDropzone");
       }
     }
   },
 
-  openDeskModal: function () {
-    const modal = document.getElementById("deskModal");
-    const rHand = document.getElementById("deskHand");
-    const rChecked = document.getElementById("deskChecked");
-    const warn = document.getElementById("deskWarn");
-    const ok = document.getElementById("deskConfirm");
-    const cancel = document.getElementById("deskCancel");
-
-    if (!modal || !rHand || !rChecked || !warn || !ok || !cancel) return;
-
-    modal.style.display = "flex";
-
-    // Se >10kg, força porão
-    if (this.state.handWeight > 10) {
-      rChecked.checked = true;
-      rHand.checked = false;
-      rHand.disabled = true;
-      warn.textContent = "⚠️ Peso > 10kg: porão obrigatório.";
-    } else {
-      rHand.disabled = false;
-      warn.textContent = "";
-    }
-
-    const close = () => (modal.style.display = "none");
-
-    cancel.onclick = () => {
-      close();
-      this.setObjective("🏢 Check-in feito. Decide a bagagem no balcão.", "checkinDesk");
-    };
-
-ok.onclick = () => {
-  const wantsChecked = !!rChecked.checked;
-
-  // reset SEMPRE
-  this.state.checkedItems = [];
-  this.state.checkedIn = false;
-
-  // 1) Se escolheu "despachar" e tem mala -> mala vai para o porão
-  if (wantsChecked && this.state.items.luggage) {
-    this.state.checkedItems.push("luggage");
-  }
-
-  // 2) Regra peso mochila (se >10kg não pode ir como mão => também vai para porão)
-  // (mesmo que ele não tenha selecionado porão para mala)
-  if (this.state.items.backpack && (this.state.handWeight || 0) > 10) {
-    // evita duplicados
-    if (!this.state.checkedItems.includes("backpack")) {
-      this.state.checkedItems.push("backpack");
-    }
-  }
-
-  // 3) Se ele tem mala e NÃO escolheu porão, mas a mala é pesada -> força porão
-  // (ajusta limite se quiseres, aqui fica 10kg para “cabine”)
-  if (this.state.items.luggage && !wantsChecked && (this.state.luggageWeight || 0) > 10) {
-    warn.textContent = "⚠️ Mala > 10kg não pode ir em cabine. Tens de enviar para o porão.";
-    rChecked.checked = true;
-    rHand.checked = false;
-    return;
-  }
-
-  // compatibilidade UI antiga
-  this.state.hasCheckedBag = this.state.checkedItems.length > 0;
-
-  close();
-  this.updateBPUI();
-
-  if (this.state.checkedItems.length > 0) {
-    const falta = this.state.checkedItems.map(x => (x === "luggage" ? "mala" : "mochila")).join(" + ");
-    this.setObjective(`🧳 Vai ao BAG DROP (círculo roxo) e despacha: ${falta}.`, "baggageDropzone");
-  } else {
-    this.setObjective("🔐 Segue para a segurança (círculo verde) e completa o scanner.", "securityDropzone");
-  }
-};
-
-
-  },
 
   // -------- Bag Drop: painel simples via click (roxo) ----------
 onBagDropClick: function () {
@@ -699,189 +730,12 @@ onBagDropClick: function () {
   this.state.checkedItems = this.state.checkedItems || [];
 
   if (this.state.checkedItems.length === 0) {
-    this.setObjective("ℹ️ Não tens nada para despachar no porão. Segue para a segurança.", "securityDropzone");
+    this.setObjective("ℹ️ You have nothing to dispatch in the hold. Proceed to security.", "securityDropzone");
     return;
   }
 
-  this.openBagDropPanel(); // ✅ abre painel 3D
+  this.openBagDropPanel(); // ✅ opens 3D panel
 },
-
-
-  // -------- Scanner modal ----------
-openScannerModal: function (source = "scanner") {
-  if (!this.state.started) return;
-
-  const modal = document.getElementById("scannerModal");
-  const status = document.getElementById("scanStatus");
-  const btnBP = document.getElementById("btnShowBP");
-  const btnBack = document.getElementById("btnScanBackpack");
-  const btnPhone = document.getElementById("btnScanPhone");
-  const btnLuggage = document.getElementById("btnScanLuggage");
-  const btnClose = document.getElementById("btnCloseScanner");
-  const btnCollect = document.getElementById("btnCollect");
-
-  if (!modal || !status || !btnBP || !btnBack || !btnPhone || !btnLuggage || !btnClose) return;
-
-  // garantir estrutura
-  this.state.items = this.state.items || { backpack: false, phone: false, luggage: false };
-  this.state.security = this.state.security || {
-    boardingPassShown: false,
-    scannedBackpack: false,
-    scannedPhone: false,
-    scannedLuggage: false,
-  };
-
-  const carry = this.getCarrySys();
-  const inv = carry?.inventory || { backpack: false, phone: false, luggage: false };
-
-  const existsBackpack = !!this.state.items.backpack;
-  const existsPhone = !!this.state.items.phone;
-  const existsLuggage = !!this.state.items.luggage;
-
-  const carryBackpack = existsBackpack && !!inv.backpack;
-  const carryPhone = existsPhone && !!inv.phone;
-  const carryLuggage = existsLuggage && !!inv.luggage;
-
-  // mala só é cabine se NÃO foi para porão (no teu projeto: checkedItems)
-  const checkedItems = Array.isArray(this.state.checkedItems) ? this.state.checkedItems : [];
-  const luggageInHold = checkedItems.includes("luggage");
-  const needLuggage = carryLuggage && !luggageInHold;
-
-  const needBackpack = carryBackpack;
-  const needPhone = carryPhone;
-
-  // mostrar/esconder botões conforme o que faz sentido existir
-  btnBack.style.display = needBackpack ? "block" : "none";
-  btnPhone.style.display = needPhone ? "block" : "none";
-  btnLuggage.style.display = needLuggage ? "block" : "none";
-
-  // helper: bloquear/ativar botões
-  const setEnabled = (btn, enabled, hint = "") => {
-    if (!btn) return;
-    btn.disabled = !enabled;
-    btn.style.opacity = enabled ? "1" : "0.45";
-    btn.style.pointerEvents = enabled ? "auto" : "none";
-    if (hint) btn.title = hint;
-    else btn.removeAttribute("title");
-  };
-
-  // ✅ REGRA PRINCIPAL (separar BP vs pertences)
-  const bpAlreadyShown = !!this.state.security.boardingPassShown;
-
-  if (source === "bp") {
-    // Só BP aqui
-    setEnabled(btnBP, true);
-    setEnabled(btnBack, false, "Para pertences, usa o SCANNER (círculo verde).");
-    setEnabled(btnPhone, false, "Para pertences, usa o SCANNER (círculo verde).");
-    setEnabled(btnLuggage, false, "Para pertences, usa o SCANNER (círculo verde).");
-  } else {
-    // Só pertences aqui
-    setEnabled(btnBP, false, "Para mostrar BP, usa o leitor SCAN BP.");
-    // pertences só ficam úteis depois de BP mostrado (senão ficas com fluxo esquisito)
-    setEnabled(btnBack, bpAlreadyShown && needBackpack);
-    setEnabled(btnPhone, bpAlreadyShown && needPhone);
-    setEnabled(btnLuggage, bpAlreadyShown && needLuggage);
-  }
-
-  // botão recolher
-  if (btnCollect) {
-    btnCollect.style.display = this.state.securityPassed ? "block" : "none";
-    btnCollect.onclick = () => {
-      carry?.hideWorldItems?.();
-      this.setObjective("✅ Recolheste os pertences. Segue para os gates.", null);
-      modal.style.display = "none";
-    };
-  }
-
-  modal.style.display = "flex";
-
-  const refresh = () => {
-    const bp = this.state.security.boardingPassShown ? "✅" : "⛔";
-    const porao = (checkedItems.length > 0) ? (this.state.checkedIn ? "✅" : "⛔") : "—";
-
-    const b = needBackpack ? (this.state.security.scannedBackpack ? "✅" : "⛔") : "—";
-    const p = needPhone ? (this.state.security.scannedPhone ? "✅" : "⛔") : "—";
-    const l = needLuggage ? (this.state.security.scannedLuggage ? "✅" : "⛔") : "—";
-
-    // dica contextual
-    const hint =
-      (source === "bp")
-        ? "Leitor BP: aqui só podes mostrar o cartão."
-        : (!this.state.security.boardingPassShown
-            ? "Primeiro mostra o BP no leitor SCAN BP."
-            : "Scanner: adiciona os pertences.");
-
-    status.innerHTML =
-      `${hint}<br/>Porão: <b>${porao}</b> • BP mostrado: <b>${bp}</b> • Mala: <b>${l}</b> • Mochila: <b>${b}</b> • Telemóvel: <b>${p}</b>`;
-  };
-
-  const tryPass = () => {
-    this.tryPassSecurity();
-    refresh();
-  };
-
-  // --- ações ---
-  btnBP.onclick = () => {
-    // este botão só é clicável no source === "bp"
-    if (!this.state.boardingPassIssued) {
-      this.setObjective("🎫 Ainda não tens BP. Faz check-in primeiro.", "checkinDeskHit");
-      return;
-    }
-    if ((checkedItems.length > 0) && !this.state.checkedIn) {
-      this.setObjective("🧳 Antes da segurança: despacha o(s) item(ns) no BAG DROP.", "baggageDropzone");
-      return;
-    }
-
-    this.state.security.boardingPassShown = true;
-    this.successSound?.components?.sound?.playSound?.();
-    this.updateBPUI();
-
-    // depois de mostrar BP, se estiveres no scanner, desbloqueia pertences
-    refresh();
-  };
-
-  btnBack.onclick = () => {
-    if (!needBackpack) return;
-
-    // (manténs a tua regra do peso aqui, se quiseres)
-    if ((this.state.handWeight || 0) > 10) {
-      this.setObjective("⛔ Mochila > 10kg não é válida como mão. Abre inventário (I) e remove.", null);
-      carry?.openInventoryUI?.();
-      this.state.security.scannedBackpack = false;
-      this.updateBPUI();
-      refresh();
-      return;
-    }
-
-    this.state.security.scannedBackpack = true;
-    carry?.showBackpackOnScanner?.();
-    this.updateBPUI();
-    tryPass();
-  };
-
-  btnPhone.onclick = () => {
-    if (!needPhone) return;
-    this.state.security.scannedPhone = true;
-    carry?.showPhoneOnScanner?.();
-    this.updateBPUI();
-    tryPass();
-  };
-
-  btnLuggage.onclick = () => {
-    if (!needLuggage) return;
-    this.state.security.scannedLuggage = true;
-    carry?.showLuggageOnScanner?.();
-    this.updateBPUI();
-    tryPass();
-  };
-
-  btnClose.onclick = () => (modal.style.display = "none");
-
-  refresh();
-},
-
-
-
 
 
 tryPassSecurity: function () {
@@ -929,10 +783,14 @@ tryPassSecurity: function () {
       if (this.wallText) this.wallText.setAttribute("value", "");
 
       const gateId = this.state.gate === "A1" ? "gateA1" : this.state.gate === "A2" ? "gateA2" : "gateA3";
-      this.setObjective(`✅ Segurança concluída! Segue para o Gate ${this.state.gate}.`, gateId);
+      this.setObjective(`✅ Security completed! Proceed to Gate ${this.state.gate}.`, gateId);
+
+      this.state.gateArrived = false;
+      this.highlightTargetGate();
 
       this.successSound?.components?.sound?.playSound?.();
       this.updateBPUI();
+
     };
 
     if (delayMs) setTimeout(doPass, delayMs);
@@ -942,6 +800,37 @@ tryPassSecurity: function () {
   getCarrySys: function () {
     return this.el.sceneEl.components["carry-system"];
   },
+
+  getGateBoxId: function (gate) {
+    if (!gate) return null;
+    return gate === "A1" ? "gateA1Box" : gate === "A2" ? "gateA2Box" : "gateA3Box";
+  },
+
+  resetAllGates: function () {
+    const base = "#d8b88f"; // original color of your a-box
+    ["gateA1Box", "gateA2Box", "gateA3Box"].forEach((id) => {
+      document.getElementById(id)?.setAttribute("color", base);
+    });
+  },
+
+  setGateColor: function (gate, color) {
+    const id = this.getGateBoxId(gate);
+    if (!id) return;
+    document.getElementById(id)?.setAttribute("color", color);
+  },
+
+  highlightTargetGate: function () {
+    this.resetAllGates();
+    this.setGateColor(this.state.gate, "#3498db"); // azul destino
+  },
+
+  markGateAsArrived: function () {
+    // opcional: manter os outros base e o destino verde
+    this.resetAllGates();
+    this.setGateColor(this.state.gate, "#2ecc71"); // verde chegou
+  },
+
+
 
 
 openSecurityPanel: function () {
@@ -998,10 +887,10 @@ bindDeskPanelButtons: function () {
 
   // inserir dados (aqui continua a usar prompt, mas já dentro do painel 3D)
   btnEnter?.addEventListener("click", () => {
-    const code = prompt("Insere dados: código de reserva / documento / nº do voo:");
+    const code = prompt("Enter data: reservation code / document / flight number:");
     if (!code || code.trim().length < 4) {
       this.ui.desk.code = "";
-      this.refreshDeskPanel("⚠️ Dados inválidos (mín 4 chars).");
+      this.refreshDeskPanel("⚠️ Invalid data (min 4 chars).");
       return;
     }
     this.ui.desk.code = code.trim();
@@ -1027,30 +916,42 @@ refreshDeskPanel: function (forceWarn = "") {
   const handTxt = document.getElementById("uiDeskHandTxt");
   const checkedTxt = document.getElementById("uiDeskCheckedTxt");
 
-  if (codeTxt) codeTxt.setAttribute("value", `Código: ${this.ui.desk.code ? this.ui.desk.code : "(vazio)"}`);
+  const btnHand = document.getElementById("uiDeskHand");
+  const btnChecked = document.getElementById("uiDeskChecked");
 
-  // regra: se mochila > 10kg força porão (mesmo que escolha mão)
+  if (codeTxt) {
+    codeTxt.setAttribute("value", `Code: ${this.ui.desk.code ? this.ui.desk.code : "(empty)"}`);
+  }
+
+  // regra: se mochila > 10kg força porão
   const forcedBackpack = this.state.items?.backpack && (this.state.handWeight || 0) > 10;
-  const forcedWarn = forcedBackpack ? "⚠️ Mochila > 10kg: porão obrigatório." : "";
+  const forcedWarn = forcedBackpack ? "⚠️ Backpack > 10kg: hold mandatory." : "";
 
   const warn = forceWarn || forcedWarn || "";
   if (warnTxt) warnTxt.setAttribute("value", warn);
 
+  // se forçado, sobrepõe escolha
+  if (forcedBackpack) this.ui.desk.bagChoice = "checked";
+
   const isHand = this.ui.desk.bagChoice === "hand";
   const isChecked = this.ui.desk.bagChoice === "checked";
 
-  // só feedback visual
-  if (handTxt) handTxt.setAttribute("value", isHand ? "✅ Mão" : "Mão");
-  if (checkedTxt) checkedTxt.setAttribute("value", isChecked ? "✅ Porão" : "🧳 Porão");
+  // labels
+  if (handTxt) handTxt.setAttribute("value", isHand ? "✅ Hand" : "Hand");
+  if (checkedTxt) checkedTxt.setAttribute("value", isChecked ? "✅ Cargo Hold" : "🧳 Cargo Hold");
 
-  // se forçado, sobrepõe escolha
-  if (forcedBackpack) this.ui.desk.bagChoice = "checked";
+  // cores (feedback visual)
+  const ACTIVE = "#3498db";
+  const INACTIVE = "#2c3e50";
+
+  btnHand?.setAttribute("color", isHand ? ACTIVE : INACTIVE);
+  btnChecked?.setAttribute("color", isChecked ? ACTIVE : INACTIVE);
 },
 
 confirmDeskPanel: function () {
   // valida dados
   if (!this.ui.desk.code || this.ui.desk.code.trim().length < 4) {
-    this.refreshDeskPanel("⚠️ Tens de inserir os dados primeiro.");
+    this.refreshDeskPanel("⚠️ You must enter the data first.");
     return;
   }
 
@@ -1076,7 +977,7 @@ confirmDeskPanel: function () {
 
   // 3) regra mala “cabine” limite 10kg (igual ao que tinhas)
   if (this.state.items?.luggage && !wantsChecked && (this.state.luggageWeight || 0) > 10) {
-    this.refreshDeskPanel("⚠️ Mala > 10kg não pode ir em cabine. Escolhe Porão.");
+    this.refreshDeskPanel("⚠️ Luggage > 10kg cannot go in cabin. Choose Cargo Hold.");
     this.ui.desk.bagChoice = "checked";
     return;
   }
@@ -1090,11 +991,14 @@ confirmDeskPanel: function () {
   this.updateBPUI();
 
   if (this.state.checkedItems.length > 0) {
-    const falta = this.state.checkedItems.map(x => (x === "luggage" ? "mala" : "mochila")).join(" + ");
-    this.setObjective(`🧳 Vai ao BAG DROP (círculo roxo) e despacha: ${falta}.`, "baggageDropzone");
+    const falta = this.state.checkedItems.map(x => (x === "luggage" ? "luggage" : "backpack")).join(" + ");
+    this.setObjective(`🧳 Go to BAG DROP (purple circle) and dispatch: ${falta}.`, "baggageDropzone");
   } else {
-    this.setObjective("🔐 Segue para a segurança (círculo verde) e completa o scanner.", "securityDropzone");
+    this.setObjective("🔐 Go to security (green circle) and complete the scanner.", "securityDropzone");
   }
+
+  this.updateCheckinHint?.();
+
 },
 
 
@@ -1116,13 +1020,14 @@ bindSecurityPanelButtons: function () {
   btnBack?.addEventListener("click", () => {
     // regra peso
     if ((this.state.handWeight || 0) > 10) {
-      this.setObjective("⛔ Mochila > 10kg. Abre inventário (I) e remove.", null);
+      this.setObjective("⛔ Backpack > 10kg. Open inventory (I) and remove.", null);
       carry?.openInventoryUI?.();
       return;
     }
     if (!carry?.inventory?.backpack) return;
     this.state.security.scannedBackpack = true;
     carry?.showBackpackOnScanner?.();
+    this.playScannerSfx?.();
     this.updateBPUI();
     this.tryPassSecurity();
     this.refreshSecurityPanel();
@@ -1132,6 +1037,7 @@ bindSecurityPanelButtons: function () {
     if (!carry?.inventory?.phone) return;
     this.state.security.scannedPhone = true;
     carry?.showPhoneOnScanner?.();
+    this.playScannerSfx?.();
     this.updateBPUI();
     this.tryPassSecurity();
     this.refreshSecurityPanel();
@@ -1146,6 +1052,7 @@ bindSecurityPanelButtons: function () {
     if (!carry?.inventory?.luggage) return;
     this.state.security.scannedLuggage = true;
     carry?.showLuggageOnScanner?.();
+    this.playScannerSfx?.();
     this.updateBPUI();
     this.tryPassSecurity();
     this.refreshSecurityPanel();
@@ -1158,16 +1065,65 @@ refreshSecurityPanel: function () {
 
   const carry = this.getCarrySys();
   const checkedItems = Array.isArray(this.state.checkedItems) ? this.state.checkedItems : [];
-  const porao = (checkedItems.length > 0) ? (this.state.checkedIn ? "✅" : "⛔") : "—";
-
-  const b = (this.state.items.backpack && carry?.inventory?.backpack) ? (this.state.security.scannedBackpack ? "✅" : "⛔") : "—";
-  const p = (this.state.items.phone && carry?.inventory?.phone) ? (this.state.security.scannedPhone ? "✅" : "⛔") : "—";
-
   const luggageInHold = checkedItems.includes("luggage");
-  const l = (this.state.items.luggage && carry?.inventory?.luggage && !luggageInHold) ? (this.state.security.scannedLuggage ? "✅" : "⛔") : "—";
 
-  t.setAttribute("value", `Porão: ${porao}\nMochila: ${b}  Telemóvel: ${p}\nMala(cabine): ${l}`);
+  // helpers
+  const mk = (kind) => (kind === "ok" ? "OK" : kind === "no" ? "FALTA" : "NA");
+
+  // porão
+  const porao =
+    (checkedItems.length > 0)
+      ? (this.state.checkedIn ? mk("ok") : mk("no"))
+      : mk("na");
+
+  // “precisa” só se existe e está contigo
+  const needBackpack = !!(this.state.items.backpack && carry?.inventory?.backpack);
+  const needPhone    = !!(this.state.items.phone && carry?.inventory?.phone);
+  const needLuggage   = !!(this.state.items.luggage && carry?.inventory?.luggage && !luggageInHold);
+
+  const b = needBackpack ? (this.state.security.scannedBackpack ? mk("ok") : mk("no")) : mk("na");
+  const p = needPhone    ? (this.state.security.scannedPhone    ? mk("ok") : mk("no")) : mk("na");
+  const l = needLuggage  ? (this.state.security.scannedLuggage  ? mk("ok") : mk("no")) : mk("na");
+
+  // missing list
+  const missing = [];
+  if (checkedItems.length > 0 && !this.state.checkedIn) missing.push("Cargo Hold");
+  if (needBackpack && !this.state.security.scannedBackpack) missing.push("Backpack");
+  if (needPhone && !this.state.security.scannedPhone) missing.push("Phone");
+  if (needLuggage && !this.state.security.scannedLuggage) missing.push("Luggage (cabin)");
+
+  const missingLine = missing.length ? `Missing: ${missing.join(", ")}` : "All OK";
+
+  t.setAttribute(
+    "value",
+    `Cargo Hold: ${porao}\nBackpack: ${b} | Phone: ${p}\nLuggage (cabin): ${l}\n${missingLine}`
+  );
+
+  // ---------- CORES DOS BOTÕES ----------
+  const OK = "#2ecc71";
+  const WAIT = "#f39c12";
+  const NA = "#2c3e50";
+  const DISABLED = "#7f8c8d";
+
+  const btnBack = document.getElementById("uiBtnAddBackpack");
+  const btnPhone = document.getElementById("uiBtnAddPhone");
+  const btnLuggage = document.getElementById("uiBtnAddLuggage");
+
+  if (!this.state.items.backpack) btnBack?.setAttribute("color", NA);
+  else if (!carry?.inventory?.backpack) btnBack?.setAttribute("color", DISABLED);
+  else btnBack?.setAttribute("color", this.state.security.scannedBackpack ? OK : WAIT);
+
+  if (!this.state.items.phone) btnPhone?.setAttribute("color", NA);
+  else if (!carry?.inventory?.phone) btnPhone?.setAttribute("color", DISABLED);
+  else btnPhone?.setAttribute("color", this.state.security.scannedPhone ? OK : WAIT);
+
+  if (!this.state.items.luggage) btnLuggage?.setAttribute("color", NA);
+  else if (luggageInHold) btnLuggage?.setAttribute("color", NA);
+  else if (!carry?.inventory?.luggage) btnLuggage?.setAttribute("color", DISABLED);
+  else btnLuggage?.setAttribute("color", this.state.security.scannedLuggage ? OK : WAIT);
 },
+
+
 
 bindBPPanelButtons: function () {
   if (this._bpBound) return;
@@ -1201,9 +1157,16 @@ bindBPPanelButtons: function () {
 
 refreshBPPanel: function () {
   const t = document.getElementById("uiBPStatus");
-  if (!t) return;
-  const ok = this.state.security.boardingPassShown ? "✅" : "⛔";
-  t.setAttribute("value", `BP mostrado: ${ok}`);
+  const btn = document.getElementById("uiBtnShowBP");
+  if (!t || !btn) return;
+
+  const shown = !!this.state.security.boardingPassShown;
+
+  // texto claro (sem emojis)
+  t.setAttribute("value", `BP: ${shown ? "OK" : "MISSING"}`);
+
+  // cor do botão
+  btn.setAttribute("color", shown ? "#2ecc71" : "#f39c12");
 },
 
 
@@ -1460,43 +1423,77 @@ AFRAME.registerComponent("carry-system", {
     this.invBtnLuggage?.addEventListener("click", () => handle("luggage"));
   },
 
-  refreshInventoryPanel: function () {
-    if (!this.invPanel) return;
+refreshInventoryPanel: function () {
+  if (!this.invPanel) return;
 
-    const line = (id, label) => {
-      if (!this.exists[id]) return `${label}: (não existe)`;
-      return this.inventory[id]
-        ? `${label}: ✅ no inventário (clicar para remover)`
-        : `${label}: ⛔ fora (clicar para adicionar)`;
-    };
+  const ON = "#2ecc71";      // está no inventário
+  const OFF = "#e74c3c";     // está fora
+  const NEUTRAL = "#2c3e50"; // fallback
 
-    this.invTxtBackpack?.setAttribute("value", line("backpack", "🎒 Mochila"));
-    this.invTxtPhone?.setAttribute("value", line("phone", "📱 Telemóvel"));
-    this.invTxtLuggage?.setAttribute("value", line("luggage", "🧳 Mala"));
+  const line = (id, label) => {
+    if (!this.exists[id]) return `${label}: (não existe)`;
+    return this.inventory[id]
+      ? `${label}: ✅ no inventário (clicar para remover)`
+      : `${label}: ⛔ fora (clicar para adicionar)`;
+  };
 
-    const eb = !!this.exists.backpack;
-    const ep = !!this.exists.phone;
-    const el = !!this.exists.luggage;
+  // textos
+  this.invTxtBackpack?.setAttribute("value", line("backpack", "🎒 Backpack"));
+  this.invTxtPhone?.setAttribute("value", line("phone", "📱 Phone"));
+  this.invTxtLuggage?.setAttribute("value", line("luggage", "🧳 Luggage"));
 
-    this.invBtnBackpack?.setAttribute("visible", eb);
-    this.invTxtBackpack?.setAttribute("visible", eb);
+  // mostrar/esconder
+  const eb = !!this.exists.backpack;
+  const ep = !!this.exists.phone;
+  const el = !!this.exists.luggage;
 
-    this.invBtnPhone?.setAttribute("visible", ep);
-    this.invTxtPhone?.setAttribute("visible", ep);
+  this.invBtnBackpack?.setAttribute("visible", eb);
+  this.invTxtBackpack?.setAttribute("visible", eb);
 
-    this.invBtnLuggage?.setAttribute("visible", el);
-    this.invTxtLuggage?.setAttribute("visible", el);
-  },
+  this.invBtnPhone?.setAttribute("visible", ep);
+  this.invTxtPhone?.setAttribute("visible", ep);
+
+  this.invBtnLuggage?.setAttribute("visible", el);
+  this.invTxtLuggage?.setAttribute("visible", el);
+
+  // cores (feedback visual)
+  if (eb) this.invBtnBackpack?.setAttribute("color", this.inventory.backpack ? ON : OFF);
+  else this.invBtnBackpack?.setAttribute("color", NEUTRAL);
+
+  if (ep) this.invBtnPhone?.setAttribute("color", this.inventory.phone ? ON : OFF);
+  else this.invBtnPhone?.setAttribute("color", NEUTRAL);
+
+  if (el) this.invBtnLuggage?.setAttribute("color", this.inventory.luggage ? ON : OFF);
+  else this.invBtnLuggage?.setAttribute("color", NEUTRAL);
+},
+
 });
 
 
+AFRAME.registerComponent("destination-preview", {
+  init: function () {
+    this.el.addEventListener("click", () => {
+      const wf = this.el.sceneEl.components["wayfinding"];
+      wf?.toggleDestinationPreview?.();
+    });
+  },
+});
 
+window.addEventListener("DOMContentLoaded", () => {
+  const app = document.getElementById("app");
 
+  const toggleFs = async () => {
+    if (!document.fullscreenElement) {
+      await app?.requestFullscreen?.();
+    } else {
+      await document.exitFullscreen?.();
+    }
+  };
 
-
-
-
-
+  window.addEventListener("keydown", (e) => {
+    if (e.key.toLowerCase() === "f") toggleFs();
+  });
+});
 
 </script>
 
@@ -1509,26 +1506,8 @@ AFRAME.registerComponent("carry-system", {
         border-radius: 12px; font-family: system-ui, sans-serif; font-size: 14px;
       }
 
-      .modal{
-        position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
-        background:rgba(0,0,0,.55); z-index:9999;
-        font-family:system-ui,sans-serif;
-      }
-      .modal-card{
-        width:min(520px, calc(100% - 24px));
-        background:#111; color:#fff; padding:16px; border-radius:14px;
-        border:1px solid rgba(255,255,255,.12);
-      }
-      .modal-card h3{ margin:0 0 8px 0; font-size:18px; }
-      .modal-card p{ margin:8px 0; color:rgba(255,255,255,.85); }
-      .modal-card .row{ display:flex; gap:10px; margin-top:10px; }
-      .modal-card button{
-        flex:1; padding:10px 12px; border-radius:10px;
-        border:0; cursor:pointer; font-weight:600;
-      }
       #btnOnline{ background:#2ecc71; }
       #btnCounter{ background:#f1c40f; }
-      .hint{ font-size:12px; opacity:.75; margin-top:10px; }
 
       .bp{
         position:fixed; right:12px; top:12px; z-index:11;
@@ -1544,176 +1523,64 @@ AFRAME.registerComponent("carry-system", {
         #hud{ right: 12px; }
       }
 
+      #app{
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+      }
+
+
 
     </style>
   </head>
 
-  <body>
+<body>
+  <div id="app">
     <div id="hud">
-      <b>Aeroporto VR</b><br />WASD • Rato
-      <br/><span id="hudTarget">Entra no aeroporto e faz Check-in.</span>
+      <b>VR Airport</b><br />WASD • Mouse • Click<br/><br/>
+      <br/><span id="hudTarget">Enter the airport and check in.</span>
     </div>
 
-  <div id="boardingPass" class="bp" style="display:none;">
-    <div class="bp-title">🎫 Cartão de Embarque</div>
-    <div id="bpLine1" class="bp-line">Gate: — | Destino: —</div>
-    <div id="bpLine2" class="bp-line">
-      BP: ⛔ • Bagagem: ⛔ • Etiqueta: — • Drop-off: — • Segurança: ⛔
-    </div>
-
-  </div>
-
-    <!-- Modal: Check-in (inicial) -->
-  <div id="flowModal" class="modal" style="display:none;">
-    <div class="modal-card">
-      <h3>✈️ Check-in</h3>
-
-      <p><b>Modo</b></p>
-      <div class="row">
-        <button id="mOnline">✅ Online</button>
-        <button id="mAirport">🏢 No aeroporto</button>
-      </div>
-
-      <hr style="opacity:.15; margin:12px 0">
-
-      <p><b>Bagagem de mão</b> (ex: mochila)</p>
-      <label style="display:flex; gap:8px; align-items:center;">
-        Peso:
-        <input id="handWeight" type="number" min="0" step="0.1" value="6" style="margin-left:auto; width:90px;">
-        <span style="opacity:.75;">kg</span>
-      </label>
-      <p class="hint">Regra: bagagem de mão tem de ser ≤ <b>10kg</b> (senão é obrigatório porão).</p>
-
-      <div id="onlineExtra" style="display:none;">
-        <hr style="opacity:.15; margin:12px 0">
-        <p><b>(Online) Queres despachar bagagem de porão?</b></p>
-        <label style="display:flex; gap:8px; align-items:center;">
-          <input type="checkbox" id="onlineChecked">
-          Sim, vou despachar uma mala no porão
-        </label>
-      </div>
-
-      <div style="margin-top:8px;">
-        <label style="font-size:13px; opacity:.85;">Peso da mala (kg)</label>
-        <input id="luggageWeight" type="number" min="0" step="0.1" value="0"
-              style="width:100%; padding:8px; border-radius:10px; border:0; margin-top:6px;">
-      </div>
-
-
-      <hr style="opacity:.15; margin:12px 0">
-      <p><b>Pertences</b> (começam no inventário)</p>
-
-      <label style="display:flex; gap:8px; align-items:center; margin:6px 0;">
-        <input type="checkbox" id="hasBackpack" checked>
-        🎒 Mochila
-      </label>
-
-      <label style="display:flex; gap:8px; align-items:center; margin:6px 0;">
-        <input type="checkbox" id="hasPhone" checked>
-        📱 Telemóvel
-      </label>
-
-      <label style="display:flex; gap:8px; align-items:center; margin:6px 0;">
-        <input type="checkbox" id="hasLuggage">
-        🧳 Mala (pode ser porão)
-      </label>
-
-
-      <div class="row" style="margin-top:12px;">
-        <button id="flowStart" style="background:#3498db; color:#fff;">▶️ Começar</button>
-      </div>
-
-      <p id="flowWarn" class="hint" style="color:#ffcc66;"></p>
-    </div>
-  </div>
-
-  <!-- Modal: Balcão (só airport) -->
-  <div id="deskModal" class="modal" style="display:none;">
-    <div class="modal-card">
-      <h3>🏢 Balcão de Check-in</h3>
-      <p>Confirmar bagagem:</p>
-
-      <label style="display:flex; gap:8px; align-items:center; margin:6px 0;">
-        <input type="radio" name="deskBag" id="deskHand" checked>
-        Vou apenas com bagagem de mão
-      </label>
-      <label style="display:flex; gap:8px; align-items:center; margin:6px 0;">
-        <input type="radio" name="deskBag" id="deskChecked">
-        Vou despachar uma mala no porão
-      </label>
-
-      <p id="deskWarn" class="hint" style="color:#ffcc66;"></p>
-
-      <div class="row" style="margin-top:12px;">
-        <button id="deskConfirm" style="background:#2ecc71;">✅ Confirmar</button>
-        <button id="deskCancel" style="background:#95a5a6;">Cancelar</button>
+    <div id="boardingPass" class="bp" style="display:none;">
+      <div class="bp-title">🎫 Boarding Pass</div>
+      <div id="bpLine1" class="bp-line">Gate: — | Destination: —</div>
+      <div id="bpLine2" class="bp-line">
+        BP: ⛔ • Luggage: ⛔ • Tag: — • Drop-off: — • Security: ⛔
       </div>
     </div>
-  </div>
 
-  <!-- Modal: Scanner (segurança) -->
-  <div id="scannerModal" class="modal" style="display:none;">
-    <div class="modal-card">
-      <h3>🔐 Segurança — Scanner</h3>
+    <a-scene id="scene"
+      wayfinding carry-system audio-unlock
+      vr-mode-ui="enabled: false"
+      renderer="colorManagement: true; physicallyCorrectLights: true;"
+      shadow="type: pcfsoft">
 
-      <div id="scanStatus" class="hint"></div>
-
-      <div class="row" style="margin-top:10px;">
-        <button id="btnShowBP" style="background:#2ecc71;">🎫 Mostrar BP</button>
-        <button id="btnScanBackpack" style="background:#f1c40f;">🎒 Adicionar mochila</button>
-      </div>
-
-      <div class="row" style="margin-top:10px;">
-        <button id="btnScanPhone" style="background:#f39c12;">📱 Adicionar telemóvel</button>
-        <button id="btnScanLuggage">🧳 Mala</button>
-        <button id="btnCloseScanner" style="background:#95a5a6;">Fechar</button>
-      </div>
-
-      <p class="hint" style="margin-top:10px;">
-        Dica: tens de “mostrar BP” e adicionar todos os pertences para poderes passar.
-      </p>
-
-      <button id="btnCollect" style="background:#3498db;">🎒 Recolher pertences</button>
-
-    </div>
-  </div>
-
-
-  <div id="bagDropModal" class="modal" style="display:none;">
-  <div class="modal-card">
-    <h3>🧳 Bag Drop</h3>
-    <p id="bagDropInfo" class="hint"></p>
-    <div class="row" style="margin-top:12px;">
-      <button id="bagDropConfirm" style="background:#8e44ad; color:#fff;">✅ Despachar mala</button>
-      <button id="bagDropClose" style="background:#95a5a6;">Fechar</button>
-    </div>
-  </div>
-</div>
-
-
-
-
-    <a-scene wayfinding carry-system audio-unlock
-         renderer="colorManagement: true; physicallyCorrectLights: true;"
-         shadow="type: pcfsoft">
       <a-sky id="main-sky" color="#87CEEB"></a-sky>
 
 
+
+      
       <a-assets>
-        <img id="chao-tex" src="chao2.jpg">
-        <img id="parede-tex" src="parede.jpg">
+        <img id="chao-tex" src="assets/images/chao2.jpg">
+        <img id="parede-tex" src="assets/images/parede.jpg">
         <img id="asfalto-tex" src="https://cdn.aframe.io/a-painter/images/floor.jpg">
 
-        <a-asset-item id="modelo-mala" src="luggage.glb"></a-asset-item>
-        <a-asset-item id="modelo-backpack" src="backpack.glb"></a-asset-item>
-        <a-asset-item id="modelo-balcao" src="airport_check_in_desk.glb"></a-asset-item>
-        <a-asset-item id="modelo-security" src="airport_security_check.glb"></a-asset-item>
-        <a-asset-item id="modelo-iphone" src="iphone.glb"></a-asset-item>
+        <img id="panoParis"  src="assets/images/paris.jpg">
+        <img id="panoMadrid" src="assets/images/Madrid.jpg">
+        <img id="panoLondon" src="assets/images/londres.jpg">
 
+        <a-asset-item id="aviaoModel" src="assets/models/avião.glb"></a-asset-item>
+        <a-asset-item id="modelo-mala" src="assets/models/luggage.glb"></a-asset-item>
+        <a-asset-item id="modelo-backpack" src="assets/models/backpack.glb"></a-asset-item>
+        <a-asset-item id="modelo-balcao" src="assets/models/airport_check_in_desk.glb"></a-asset-item>
+        <a-asset-item id="modelo-security" src="assets/models/airport_security_check.glb"></a-asset-item>
+        <a-asset-item id="modelo-iphone" src="assets/models/iphone.glb"></a-asset-item>
+        <a-asset-item id="modelo-cadeira" src="assets/models/waiting_chair.glb"></a-asset-item>
+        <a-asset-item id="modelo-gate-sign" src="assets/models/airport_boarding_gate_sign.glb"></a-asset-item>
+        <a-asset-item id="vmachineModel" src="assets/models/vmachine.glb"></a-asset-item>
+        <a-asset-item id="vmachineModel2" src="assets/models/vmachine2.glb"></a-asset-item>
 
-        <!-- NOVOS MODELOS -->
-        <a-asset-item id="modelo-cadeira" src="waiting_chair.glb"></a-asset-item>
-        <a-asset-item id="modelo-gate-sign" src="airport_boarding_gate_sign.glb"></a-asset-item>
 
         <audio id="airportAmbience"
        src="https://cdn.pixabay.com/download/audio/2022/03/24/audio_3079b47e40.mp3"
@@ -1725,7 +1592,7 @@ AFRAME.registerComponent("carry-system", {
               preload="auto"
               crossorigin="anonymous"></audio>
 
-        <audio id="scannerSfx" src="scannerSound.wav" preload="auto"></audio>
+        <audio id="scannerSfx" src="assets/audio/scannerSound.wav" preload="auto"></audio>
 
       </a-assets>
 
@@ -1749,330 +1616,567 @@ AFRAME.registerComponent("carry-system", {
         </a-camera>
       </a-entity>
 
+      <a-entity
+        id="vendingMachine2"
+        gltf-model="#vmachineModel2"
+        position="8.269 1 -10"
+        rotation="0 90 0"
+        scale="1 1 1">
+      </a-entity>
+
+            <a-entity
+        id="vendingMachine"
+        gltf-model="#vmachineModel"
+        position="10.245 1.173 -12"
+        rotation="0 270 0"
+        scale="1 1 1">
+      </a-entity>
+
+      <a-entity
+        id="vendingMachine2"
+        gltf-model="#vmachineModel2"
+        position="8.269 1 -16"
+        rotation="0 90 0"
+        scale="1 1 1">
+      </a-entity>
+
+            <a-entity
+        id="vendingMachine"
+        gltf-model="#vmachineModel"
+        position="10.245 1.173 -6"
+        rotation="0 270 0"
+        scale="1 1 1">
+      </a-entity>
+
+      <a-entity
+        id="vendingMachine"
+        gltf-model="#vmachineModel"
+        position="10.245 1.173 14"
+        rotation="0 270 0"
+        scale="1 1 1">
+      </a-entity>
+
+            <a-entity
+        id="vendingMachine"
+        gltf-model="#vmachineModel"
+        position="10.245 1.173 12"
+        rotation="0 270 0"
+        scale="1 1 1">
+      </a-entity>
+
+            <a-entity
+        id="vendingMachine"
+        gltf-model="#vmachineModel"
+        position="10.245 1.173 10"
+        rotation="0 270 0"
+        scale="1 1 1">
+      </a-entity>
+
+
+      <a-entity
+        id="aviaoExterior"
+        gltf-model="#aviaoModel"
+        position="-27.147 3.406 -36.535"
+        rotation="-10 180 0"
+        scale="5 5 5">
+      </a-entity>
+
+            <a-entity
+        id="aviaoExterior"
+        gltf-model="#aviaoModel"
+        position="-13.418 0 20.669"
+        rotation="0 120 0"
+        scale="4 4 4">
+      </a-entity>
+
+            <a-entity
+        id="aviaoExterior"
+        gltf-model="#aviaoModel"
+        position="-13.854 0 4.457"
+        rotation="0 120 0"
+        scale="4 4 4">
+      </a-entity>
+
+
 
       <a-entity id="uiInvPanel"
-          visible="false"
-          rotation="0 0 0" face-camera>
+    visible="false"
+    rotation="0 0 0"
+    face-camera>
 
-      <a-plane width="1.9" height="1.15" color="#111"
-              material="opacity:0.88; transparent:true"></a-plane>
+  <!-- FUNDO -->
+  <a-plane width="2.55" height="1.55" color="#111"
+          radius="0.06"
+          material="opacity:0.90; transparent:true; shader: flat"></a-plane>
 
-      <a-text value="🎒 INVENTÁRIO"
-              position="0 0.45 0.01"
-              align="center" width="2.8" color="#fff"></a-text>
+  <a-text value="🎒 Inventory"
+          position="0 0.62 0.01"
+          align="center" width="2.4" wrap-count="20" color="#fff"></a-text>
 
-      <a-text id="uiInvHint"
-              value="I para fechar"
-              position="0 0.32 0.01"
-              align="center" width="2.4" color="#bdbdbd"></a-text>
+  <a-text id="uiInvHint"
+          value="I to close"
+          position="0 0.429 0.01"
+          align="center" width="2.2" wrap-count="22" color="#bdbdbd"></a-text>
 
-      <!-- Mochila -->
-      <a-plane id="uiInvBackpack" class="clickable"
-              position="0 0.12 0.01" width="1.55" height="0.20"
-              color="#2c3e50"></a-plane>
-      <a-text id="uiInvBackpackTxt"
-              value="🎒 Mochila: —"
-              position="0 0.12 0.02" align="center" width="3.0" color="#fff"></a-text>
+  <!-- Mochila -->
+  <a-plane id="uiInvBackpack" class="clickable"
+          position="0 0.18 0.01" width="2.10" height="0.22"
+          color="#2c3e50"></a-plane>
+  <a-text id="uiInvBackpackTxt"
+          value="🎒 Backpack: —"
+          position="0 0.18 0.02" align="center" width="2.10" wrap-count="40" color="#fff"></a-text>
 
-      <!-- Telemóvel -->
-      <a-plane id="uiInvPhone" class="clickable"
-              position="0 -0.12 0.01" width="1.55" height="0.20"
-              color="#2c3e50"></a-plane>
-      <a-text id="uiInvPhoneTxt"
-              value="📱 Telemóvel: —"
-              position="0 -0.12 0.02" align="center" width="3.0" color="#fff"></a-text>
+  <!-- Telemóvel -->
+  <a-plane id="uiInvPhone" class="clickable"
+          position="0 -0.10 0.01" width="2.10" height="0.22"
+          color="#2c3e50"></a-plane>
+  <a-text id="uiInvPhoneTxt"
+          value="📱 Phone: —"
+          position="0 -0.10 0.02" align="center" width="2.10" wrap-count="40" color="#fff"></a-text>
 
-      <!-- Mala -->
-      <a-plane id="uiInvLuggage" class="clickable"
-              position="0 -0.36 0.01" width="1.55" height="0.20"
-              color="#2c3e50"></a-plane>
-      <a-text id="uiInvLuggageTxt"
-              value="🧳 Mala: —"
-              position="0 -0.36 0.02" align="center" width="3.0" color="#fff"></a-text>
+  <!-- Mala -->
+  <a-plane id="uiInvLuggage" class="clickable"
+          position="0 -0.38 0.01" width="2.10" height="0.22"
+          color="#2c3e50"></a-plane>
+  <a-text id="uiInvLuggageTxt"
+          value="🧳 Luggage: —"
+          position="0 -0.38 0.02" align="center" width="2.10" wrap-count="40" color="#fff"></a-text>
 
-    </a-entity>
+</a-entity>
 
 
-        <a-entity id="uiFlowPanel"
+
+<a-entity id="uiFlowPanel"
           position="0 1.7 23"
           rotation="0 180 0"
           visible="true"
           face-camera>
 
-        <a-plane width="2.2" height="1.55" color="#111"
-                material="opacity:0.88; transparent:true"></a-plane>
+  <!-- FUNDO (maior + cantos arredondados) -->
+  <a-plane width="2.95" height="2.05" color="#111"
+           radius="0.06"
+           material="opacity:0.90; transparent:true; shader:flat"></a-plane>
 
-        <a-text value="CHECK-IN" position="0 0.68 0.01"
-                align="center" width="3.2" color="#fff"></a-text>
+  <!-- TÍTULO -->
+  <a-text value="CHECK-IN"
+          position="0 0.90 0.01"
+          align="center" width="2.75"
+          wrap-count="20"
+          color="#fff"></a-text>
 
-        <!-- MODO -->
-        <a-text value="Modo" position="-0.95 0.45 0.01"
-                align="left" width="2.6" color="#d0d0d0"></a-text>
+  <!-- MODO -->
+  <a-text value="Mode"
+          position="-1.249 0.713 0.011"
+          align="left" width="2.65"
+          color="#d0d0d0"></a-text>
 
-        <a-plane id="uiModeOnline" class="clickable"
-                position="-0.55 0.28 0.01" width="0.95" height="0.20"
-                color="#2ecc71"></a-plane>
-        <a-text value="✅ Online" position="-0.55 0.28 0.02"
-                align="center" width="2.4" color="#111"></a-text>
+  <a-plane id="uiModeOnline" class="clickable"
+          position="-0.704 0.50 0.011" width="1.05" height="0.22"
+          color="#2ecc71"></a-plane>
+  <a-text value="✅ Online"
+          position="-0.721 0.50 0.022"
+          align="center" width="1.8"
+          color="#111"></a-text>
 
-        <a-plane id="uiModeAirport" class="clickable"
-                position="0.55 0.28 0.01" width="0.95" height="0.20"
-                color="#f1c40f"></a-plane>
-        <a-text value="🏢 Aeroporto" position="0.55 0.28 0.02"
-                align="center" width="2.4" color="#111"></a-text>
+  <a-plane id="uiModeAirport" class="clickable"
+          position="0.740 0.50 0.008" width="1.05" height="0.22"
+          color="#f1c40f"></a-plane>
+  <a-text value="🏢 Airport"
+          position="0.753 0.50 0.018"
+          align="center" width="1.8"
+          color="#111"></a-text>
 
-        <!-- PERTENCES -->
-        <a-text value="Pertences" position="-0.95 0.06 0.01"
-                align="left" width="2.6" color="#d0d0d0"></a-text>
+  <!-- BELONGINGS -->
+  <a-text value="Belongings"
+          position="-1.244 0.23 0.001"
+          align="left" width="2.65"
+          color="#d0d0d0"></a-text>
 
-        <a-plane id="uiHasBackpack" class="clickable"
-                position="-0.62 -0.12 0.01" width="0.75" height="0.18"
-                color="#34495e"></a-plane>
-        <a-text id="uiHasBackpackTxt" value="🎒 Mochila: SIM"
-                position="-0.62 -0.12 0.02" align="center"
-                width="2.2" color="#fff"></a-text>
+  <a-plane id="uiHasBackpack" class="clickable"
+          position="-0.844 0.03 0.01" width="0.78" height="0.18"
+          color="#34495e"></a-plane>
+  <a-text id="uiHasBackpackTxt" value="🎒 Backpack: YES"
+          position="-0.889 0.03 0.02" align="center"
+          width="1.7" wrap-count="22"
+          color="#fff"></a-text>
 
-        <a-plane id="uiHasPhone" class="clickable"
-                position="0.18 -0.12 0.01" width="0.75" height="0.18"
-                color="#34495e"></a-plane>
-        <a-text id="uiHasPhoneTxt" value="📱 Telemóvel: SIM"
-                position="0.18 -0.12 0.02" align="center"
-                width="2.2" color="#fff"></a-text>
+  <a-plane id="uiHasPhone" class="clickable"
+          position="0.044 0.03 0.01" width="0.78" height="0.18"
+          color="#34495e"></a-plane>
+  <a-text id="uiHasPhoneTxt" value="📱 Phone: YES"
+          position="0.034 0.03 0.02" align="center"
+          width="1.7" wrap-count="22"
+          color="#fff"></a-text>
 
-        <a-plane id="uiHasLuggage" class="clickable"
-                position="0.98 -0.12 0.01" width="0.75" height="0.18"
-                color="#34495e"></a-plane>
-        <a-text id="uiHasLuggageTxt" value="🧳 Mala: NÃO"
-                position="0.98 -0.12 0.02" align="center"
-                width="2.2" color="#fff"></a-text>
+  <a-plane id="uiHasLuggage" class="clickable"
+          position="0.973 0.03 0.009" width="0.78" height="0.18"
+          color="#34495e"></a-plane>
+  <a-text id="uiHasLuggageTxt" value="🧳 Luggage: NO"
+          position="0.952 0.03 0.019" align="center"
+          width="1.7" wrap-count="22"
+          color="#fff"></a-text>
 
-        <!-- PESOS (botões +/-) -->
-        <a-text id="uiHandWLabel" value="Peso mochila: 6.0kg"
-                position="-0.95 -0.38 0.01" align="left"
-                width="3.0" color="#d0d0d0"></a-text>
+  <!-- WEIGHTS -->
+  <a-text id="uiHandWLabel" value="Backpack weight: 6.0kg"
+          position="-1.263 -0.23 0.011" align="left"
+          width="2.65" wrap-count="29"
+          color="#d0d0d0"></a-text>
 
-        <a-plane id="uiHandMinus" class="clickable"
-                position="0.45 -0.38 0.01" width="0.18" height="0.18"
-                color="#95a5a6"></a-plane>
-        <a-text value="-" position="0.45 -0.38 0.02" align="center" width="2" color="#111"></a-text>
+  <a-plane id="uiHandMinus" class="clickable"
+          position="0.889 -0.23 0.008" width="0.20" height="0.20"
+          color="#95a5a6"></a-plane>
+  <a-text value="-" position="0.887 -0.23 0.018" align="center" width="2" color="#111" wrap-count="20"></a-text>
 
-        <a-plane id="uiHandPlus" class="clickable"
-                position="0.68 -0.38 0.01" width="0.18" height="0.18"
-                color="#95a5a6"></a-plane>
-        <a-text value="+" position="0.68 -0.38 0.02" align="center" width="2" color="#111"></a-text>
+  <a-plane id="uiHandPlus" class="clickable"
+          position="1.173 -0.23 0.007" width="0.20" height="0.20"
+          color="#95a5a6"></a-plane>
+  <a-text value="+" position="1.164 -0.23 0.017" align="center" width="1.2" color="#111" wrap-count="20"></a-text>
 
-        <a-text id="uiLuggWLabel" value="Peso mala: 0.0kg"
-                position="-0.95 -0.58 0.01" align="left"
-                width="3.0" color="#d0d0d0"></a-text>
+  <a-text id="uiLuggWLabel" value="Luggage weight: 0.0kg"
+          position="-1.262 -0.46 0.011" align="left"
+          width="2.4" wrap-count="26"
+          color="#d0d0d0"></a-text>
 
-        <a-plane id="uiLuggMinus" class="clickable"
-                position="0.45 -0.58 0.01" width="0.18" height="0.18"
-                color="#95a5a6"></a-plane>
-        <a-text value="-" position="0.45 -0.58 0.02" align="center" width="2" color="#111"></a-text>
+  <a-plane id="uiLuggMinus" class="clickable"
+          position="0.889 -0.46 0.008" width="0.20" height="0.20"
+          color="#95a5a6"></a-plane>
+  <a-text value="-" position="0.887 -0.46 0.018" align="center" width="2" color="#111" wrap-count="20"></a-text>
 
-        <a-plane id="uiLuggPlus" class="clickable"
-                position="0.68 -0.58 0.01" width="0.18" height="0.18"
-                color="#95a5a6"></a-plane>
-        <a-text value="+" position="0.68 -0.58 0.02" align="center" width="2" color="#111"></a-text>
+  <a-plane id="uiLuggPlus" class="clickable"
+          position="1.173 -0.46 0.007" width="0.20" height="0.20"
+          color="#95a5a6"></a-plane>
+  <a-text value="+" position="1.164 -0.46 0.017" align="center" width="1.2" color="#111" wrap-count="20"></a-text>
 
-        <!-- CHECK (só online) -->
-        <a-plane id="uiOnlineChecked" class="clickable"
-                position="-0.55 -0.80 0.01" width="2.0" height="0.18"
-                color="#2c3e50"></a-plane>
-        <a-text id="uiOnlineCheckedTxt" value="(Online) Despachar mala: NÃO"
-                position="-0.55 -0.80 0.02" align="center" width="3.4" color="#fff"></a-text>
+  <!-- CHECK (online only) -->
+  <a-plane id="uiOnlineChecked" class="clickable"
+          position="0 -0.717 0.01" width="2.25" height="0.20"
+          color="#2c3e50"></a-plane>
+  <a-text id="uiOnlineCheckedTxt" value="(Online) Check luggage: NO"
+          position="0 -0.682 0.02" align="center"
+          width="2.25" wrap-count="28"
+          color="#fff"></a-text>
 
-        <!-- WARN -->
-        <a-text id="uiFlowWarn" value=""
-                position="0 -0.98 0.01" align="center" width="3.2"
-                color="#ffcc66"></a-text>
+  <!-- WARN -->
+  <a-text id="uiFlowWarn" value=""
+          position="0 -0.92 0.01" align="center"
+          width="2.35" wrap-count="32"
+          color="#ffcc66"></a-text>
 
-        <!-- START -->
-        <a-plane id="uiFlowStart" class="clickable"
-                position="0 -1.18 0.01" width="1.6" height="0.22"
-                color="#3498db"></a-plane>
-        <a-text value="▶️ COMEÇAR"
-                position="0 -1.18 0.02" align="center" width="3.0" color="#fff"></a-text>
+  <!-- START -->
+  <a-plane id="uiFlowStart" class="clickable"
+          position="0 -1.15 0.01" width="1.70" height="0.24"
+          color="#3498db"></a-plane>
+  <a-text value="▶️ START"
+          position="0 -1.15 0.02" align="center"
+          width="1.9" wrap-count="18"
+          color="#fff"></a-text>
 
-      </a-entity>
+</a-entity>
+
+<a-plane
+  id="checkinHintBg"
+  position="3.287 1 20.283"
+  rotation="0 270 0"
+  width="3.6"
+  height="0.45"
+  color="#000"
+  material="opacity:0.6; transparent:true"
+  visible="false">
+</a-plane>
+
+<a-text
+  id="checkinHint"
+  value="👆 Click here to check-in"
+  position="3.287 1 20.289"
+  rotation="0 270 0"
+  align="center"
+  width="3.5"
+  color="#fff"
+  visible="false">
+</a-text>
 
 
-      <!-- Painel 3D: BAG DROP (aparece ao clicar no círculo roxo) -->
-      <a-entity id="uiBagDropPanel"
-                position="3.516 1.55 17.25"
-                rotation="0 270 0"
+
+<!-- Painel 3D: Bag Drop (aparece ao clicar no círculo roxo) -->
+<a-entity id="uiBagDropPanel"
+          position="4.208 2.083 17.704"
+          rotation="0 270 0"
+          visible="false"
+          face-camera>
+
+  <a-plane width="2.35" height="1.55"
+           color="#111"
+           radius="0.06"
+           material="opacity:0.90; transparent:true; shader: flat"></a-plane>
+
+  <a-text value="🧳 BAG DROP"
+          position="0 0.58 0.01"
+          align="center"
+          width="2.2"
+          wrap-count="18"
+          color="#fff"></a-text>
+
+  <a-text id="uiBagDropStatus"
+          value="Remaining to drop: —"
+          position="0 0.22 0.01"
+          align="center"
+          width="2.2"
+          wrap-count="30"
+          color="#d0d0d0"></a-text>
+
+  <!-- Botões -->
+  <a-plane id="uiDropLuggage" class="clickable"
+          position="0 -0.10 0.01"
+          width="2.05" height="0.24"
+          color="#8e44ad"></a-plane>
+  <a-text id="uiDropLuggageTxt"
+          value="Drop luggage"
+          position="0 -0.10 0.02"
+          align="center"
+          width="2.1"
+          wrap-count="22"
+          color="#fff"></a-text>
+
+  <a-plane id="uiDropBackpack" class="clickable"
+          position="0 -0.38 0.01"
+          width="2.05" height="0.24"
+          color="#8e44ad"></a-plane>
+  <a-text id="uiDropBackpackTxt"
+          value="Drop backpack"
+          position="0 -0.38 0.02"
+          align="center"
+          width="2.1"
+          wrap-count="22"
+          color="#fff"></a-text>
+
+  <a-plane id="uiBagDropClose" class="clickable"
+          position="0 -0.62 0.01"
+          width="1.10" height="0.18"
+          color="#95a5a6"></a-plane>
+  <a-text value="Close"
+          position="0 -0.62 0.02"
+          align="center"
+          width="1.4"
+          color="#111"></a-text>
+
+</a-entity>
+
+
+<!-- Painel 3D: Balcão (só modo airport) -->
+<a-entity id="uiDeskPanel"
+          position="4.339 2.341 20.233"
+          rotation="0 -90 0"
+          visible="false"
+          face-camera>
+
+  <!-- fundo -->
+  <a-plane width="2.55" height="1.75"
+           color="#111"
+           radius="0.06"
+           material="opacity:0.90; transparent:true; shader: flat"></a-plane>
+
+  <a-text value="🏢 CHECK-IN DESK"
+          position="0 0.70 0.01"
+          align="center"
+          width="2.4"
+          wrap-count="26"
+          color="#fff"></a-text>
+
+  <!-- código -->
+  <a-text id="uiDeskCode"
+          value="Code: (empty)"
+          position="0 0.42 0.01"
+          align="center"
+          width="2.35"
+          wrap-count="28"
+          color="#d0d0d0"></a-text>
+
+  <a-plane id="uiDeskEnter" class="clickable"
+          position="0 0.18 0.01"
+          width="2.15" height="0.22"
+          color="#3498db"></a-plane>
+  <a-text value="Enter data"
+          position="0 0.18 0.02"
+          align="center"
+          width="2.2"
+          color="#fff"></a-text>
+
+  <!-- escolha bagagem -->
+  <a-text value="Baggage"
+          position="-1.078 -0.06 0.01"
+          align="left"
+          width="2.2"
+          color="#bdbdbd"></a-text>
+
+  <a-plane id="uiDeskHand" class="clickable"
+          position="-0.569 -0.304 0.01"
+          width="1" height="0.20"
+          color="#2c3e50"></a-plane>
+  <a-text id="uiDeskHandTxt"
+          value="Hand"
+          position="-0.553 -0.304 0.02"
+          align="center"
+          width="1.6"
+          color="#fff"></a-text>
+
+  <a-plane id="uiDeskChecked" class="clickable"
+          position="0.569 -0.304 0.01"
+          width="1" height="0.20"
+          color="#2c3e50"></a-plane>
+  <a-text id="uiDeskCheckedTxt"
+          value="🧳 Cargo hold"
+          position="0.569 -0.304 0.02"
+          align="center"
+          width="1.6"
+          color="#fff"></a-text>
+
+  <!-- warn -->
+  <a-text id="uiDeskWarn"
+          value=""
+          position="0 -0.498 0.01"
+          align="center"
+          width="2.35"
+          wrap-count="34"
+          color="#ffcc66"></a-text>
+
+  <!-- confirmar / fechar -->
+  <a-plane id="uiDeskConfirm" class="clickable"
+          position="-0.552 -0.70 0.01"
+          width="1" height="0.20"
+          color="#2ecc71"></a-plane>
+  <a-text value="Confirm"
+          position="-0.552 -0.70 0.02"
+          align="center"
+          width="1.5"
+          color="#111"></a-text>
+
+  <a-plane id="uiDeskClose" class="clickable"
+          position="0.571 -0.70 0.01"
+          width="1" height="0.20"
+          color="#95a5a6"></a-plane>
+  <a-text value="Close"
+          position="0.578 -0.70 0.02"
+          align="center"
+          width="1.2"
+          color="#111"></a-text>
+
+</a-entity>
+
+
+
+<!-- Painel 3D: Segurança (aparece ao clicar no scanner) -->
+<a-entity id="uiSecurityPanel"
+          position="2.738 1.826 2.896"
+          rotation="0 0 0"
+          visible="false"
+          face-camera>
+
+  <!-- fundo (maior + cantos arredondados) -->
+  <a-plane width="2.35" height="1.55" color="#111"
+           radius="0.06"
+           material="opacity:0.90; transparent:true; shader: flat"></a-plane>
+
+  <a-text value="🔐 SECURITY"
+          position="0 0.58 0.01"
+          align="center" width="2.2" wrap-count="18"
+          color="#fff"></a-text>
+
+  <!-- status -->
+  <a-text id="uiSecStatus"
+          value="."
+          position="0 0.296 0.01"
+          align="center" width="2.2" wrap-count="45"
+          color="#d0d0d0"></a-text>
+
+  <!-- botões (grid 2 em cima + 1 em baixo) -->
+  <a-plane class="clickable" id="uiBtnAddBackpack"
+          position="-0.58 -0.05 0.01" width="1.05" height="0.22"
+          color="#2c3e50"></a-plane>
+  <a-text value="🎒 Backpack"
+          position="-0.58 -0.05 0.02" align="center"
+          width="1.6" wrap-count="16"
+          color="#fff"></a-text>
+
+  <a-plane class="clickable" id="uiBtnAddPhone"
+          position="0.58 -0.05 0.01" width="1.05" height="0.22"
+          color="#2c3e50"></a-plane>
+  <a-text value="📱 Phone"
+          position="0.58 -0.05 0.02" align="center"
+          width="1.6" wrap-count="16"
+          color="#fff"></a-text>
+
+  <a-plane class="clickable" id="uiBtnAddLuggage"
+          position="0 -0.35 0.01" width="2.16" height="0.22"
+          color="#2c3e50"></a-plane>
+  <a-text value="🧳 Luggage (cabin)"
+          position="0 -0.35 0.02" align="center"
+          width="2.2" wrap-count="22"
+          color="#fff"></a-text>
+
+  <a-plane class="clickable" id="uiBtnCloseSec"
+          position="0 -0.62 0.01" width="1.20" height="0.18"
+          color="#95a5a6"></a-plane>
+  <a-text value="Close"
+          position="0 -0.62 0.02" align="center"
+          width="1.8"
+          color="#111"></a-text>
+
+</a-entity>
+
+
+
+      <!-- Painel 3D: BP (aparece ao clicar no leitor de BP) -->
+      <a-entity id="uiBPPanel"
+                position="5.559 1.606 2.807"
+                rotation="0 -40 0"
                 visible="false"
                 face-camera>
 
-        <a-plane width="1.7" height="1.05" color="#111"
-                material="opacity:0.88; transparent:true"></a-plane>
+        <a-plane width="2.10" height="1.05"
+                color="#111"
+                radius="0.06"
+                material="opacity:0.90; transparent:true; shader: flat"></a-plane>
 
-        <a-text value="BAG DROP" position="0 0.40 0.01"
-                align="center" width="2.4" color="#fff"></a-text>
+        <a-text value="🎫 Boarding Pass"
+                position="0 0.38 0.01"
+                align="center"
+                width="2.0"
+                wrap-count="22"
+                color="#fff"></a-text>
 
-        <a-text id="uiBagDropStatus" value="..."
-                position="0 0.18 0.01"
-                align="center" width="2.2" color="#d0d0d0"></a-text>
+        <a-text id="uiBPStatus"
+                value="BP: MISSING"
+                position="0 0.173 0.01"
+                align="center"
+                width="2.0"
+                wrap-count="26"
+                color="#d0d0d0"></a-text>
 
-        <!-- botões por item -->
-        <a-plane id="uiDropLuggage" class="clickable"
-                position="0 0.00 0.01" width="1.35" height="0.18"
-                color="#bdc3c7"></a-plane>
-        <a-text id="uiDropLuggageTxt" value="🧳 Despachar mala"
-                position="0 0.00 0.02" align="center" width="2.4" color="#111"></a-text>
+        <a-plane id="uiBtnShowBP" class="clickable"
+                position="0 -0.106 0.01"
+                width="1.65" height="0.2"
+                color="#f39c12"></a-plane>
+        <a-text value="Show BP"
+                position="0 -0.104 0.02"
+                align="center"
+                width="1.8"
+                color="#111"></a-text>
 
-        <a-plane id="uiDropBackpack" class="clickable"
-                position="0 -0.22 0.01" width="1.35" height="0.18"
-                color="#f1c40f"></a-plane>
-        <a-text id="uiDropBackpackTxt" value="🎒 Despachar mochila"
-                position="0 -0.22 0.02" align="center" width="2.4" color="#111"></a-text>
-
-        <a-plane id="uiBagDropClose" class="clickable"
-                position="0 -0.44 0.01" width="1.35" height="0.16"
+        <a-plane id="uiBtnCloseBP" class="clickable"
+                position="0 -0.365 0.01"
+                width="1.10" height="0.18"
                 color="#95a5a6"></a-plane>
-        <a-text value="Fechar"
-                position="0 -0.44 0.02" align="center" width="2.0" color="#111"></a-text>
+        <a-text value="Close"
+                position="0 -0.362 0.02"
+                align="center"
+                width="1.4"
+                color="#111"></a-text>
 
       </a-entity>
 
-      <!-- Painel 3D: Balcão de Check-in (modo aeroporto) -->
-      <a-entity id="uiDeskPanel"
-                position="5.45 1.75 16.6"
-                rotation="0 270 0"
-                visible="false">
-
-        <a-plane width="1.85" height="1.25" color="#111"
-                material="opacity:0.88; transparent:true"></a-plane>
-
-        <a-text value="BALCÃO CHECK-IN"
-                position="0 0.50 0.01"
-                align="center" width="2.6" color="#fff"></a-text>
-
-        <!-- Input visual (mostra o que foi “digitado”) -->
-        <a-text id="uiDeskCode"
-                value="Código: (vazio)"
-                position="0 0.28 0.01"
-                align="center" width="2.6" color="#d0d0d0"></a-text>
-
-        <!-- Botão “Inserir dados” -->
-        <a-plane id="uiDeskEnter" class="clickable"
-                position="0 0.05 0.01"
-                width="1.35" height="0.18"
-                color="#3498db"></a-plane>
-        <a-text value="⌨️ Inserir dados"
-                position="0 0.05 0.02"
-                align="center" width="2.6" color="#fff"></a-text>
-
-        <!-- Escolha de bagagem -->
-        <a-text value="Bagagem:"
-                position="-0.78 -0.18 0.01"
-                align="left" width="2.2" color="#d0d0d0"></a-text>
-
-        <a-plane id="uiDeskHand" class="clickable"
-                position="-0.45 -0.36 0.01"
-                width="0.85" height="0.18"
-                color="#2ecc71"></a-plane>
-        <a-text id="uiDeskHandTxt" value="✅ Mão"
-                position="-0.45 -0.36 0.02"
-                align="center" width="2.0" color="#111"></a-text>
-
-        <a-plane id="uiDeskChecked" class="clickable"
-                position="0.45 -0.36 0.01"
-                width="0.85" height="0.18"
-                color="#f1c40f"></a-plane>
-        <a-text id="uiDeskCheckedTxt" value="🧳 Porão"
-                position="0.45 -0.36 0.02"
-                align="center" width="2.0" color="#111"></a-text>
-
-        <!-- Avisos -->
-        <a-text id="uiDeskWarn"
-                value=""
-                position="0 -0.58 0.01"
-                align="center" width="2.6" color="#ffcc66"></a-text>
-
-        <!-- Confirmar -->
-        <a-plane id="uiDeskConfirm" class="clickable"
-                position="0 -0.80 0.01"
-                width="1.35" height="0.18"
-                color="#2ecc71"></a-plane>
-        <a-text value="✅ Confirmar"
-                position="0 -0.80 0.02"
-                align="center" width="2.4" color="#111"></a-text>
-
-        <!-- Fechar -->
-        <a-plane id="uiDeskClose" class="clickable"
-                position="0 -0.98 0.01"
-                width="1.35" height="0.16"
-                color="#95a5a6"></a-plane>
-        <a-text value="Fechar"
-                position="0 -0.98 0.02"
-                align="center" width="2.2" color="#111"></a-text>
-
-      </a-entity>
-
-
-
-        <!-- Painel 3D: Segurança (aparece ao clicar no scanner) -->
-        <a-entity id="uiSecurityPanel"
-                  position="2.738 1.826 2.896"
-                  rotation="0 0 0"
-                  visible="false">
-
-          <!-- fundo -->
-          <a-plane width="1.6" height="1.1" color="#111" material="opacity:0.85; transparent:true"></a-plane>
-
-          <a-text value="SEGURANÇA" position="0 0.45 0.01" align="center" width="2.4" color="#fff"></a-text>
-
-          <!-- status -->
-          <a-text id="uiSecStatus" value="..." position="0 0.25 0.01" align="center" width="2.2" color="#d0d0d0"></a-text>
-
-          <!-- botões -->
-          <a-plane class="clickable" id="uiBtnAddBackpack"
-                  position="-0.45 -0.05 0.01" width="0.7" height="0.18"
-                  color="#f1c40f"></a-plane>
-          <a-text value="🎒 Mochila" position="-0.45 -0.05 0.02" align="center" width="2" color="#111"></a-text>
-
-          <a-plane class="clickable" id="uiBtnAddPhone"
-                  position="0.45 -0.05 0.01" width="0.7" height="0.18"
-                  color="#f39c12"></a-plane>
-          <a-text value="📱 Telemóvel" position="0.45 -0.05 0.02" align="center" width="2" color="#111"></a-text>
-
-          <a-plane class="clickable" id="uiBtnAddLuggage"
-                  position="0 -0.32 0.01" width="1.2" height="0.18"
-                  color="#bdc3c7"></a-plane>
-          <a-text value="🧳 Mala (cabine)" position="0 -0.32 0.02" align="center" width="2.4" color="#111"></a-text>
-
-          <a-plane class="clickable" id="uiBtnCloseSec"
-                  position="0 -0.52 0.01" width="1.2" height="0.16"
-                  color="#95a5a6"></a-plane>
-          <a-text value="Fechar" position="0 -0.52 0.02" align="center" width="2" color="#111"></a-text>
-
-        </a-entity>
-
-
-        <!-- Painel 3D: BP (aparece ao clicar no bpReader) -->
-        <a-entity id="uiBPPanel"
-                  position="5.372 1.5 1.6"
-                  rotation="0 0 0"
-                  visible="false">
-
-          <a-plane width="1.4" height="0.7" color="#111" material="opacity:0.85; transparent:true"></a-plane>
-          <a-text value="CARTÃO DE EMBARQUE" position="0 0.22 0.01" align="center" width="2.4" color="#fff"></a-text>
-          <a-text id="uiBPStatus" value="..." position="0 0.05 0.01" align="center" width="2.2" color="#d0d0d0"></a-text>
-
-          <a-plane class="clickable" id="uiBtnShowBP"
-                  position="0 -0.18 0.01" width="1.1" height="0.18"
-                  color="#2ecc71"></a-plane>
-          <a-text value="🎫 Mostrar BP" position="0 -0.18 0.02" align="center" width="2.2" color="#111"></a-text>
-
-          <a-plane class="clickable" id="uiBtnCloseBP"
-                  position="0 -0.38 0.01" width="1.1" height="0.16"
-                  color="#95a5a6"></a-plane>
-          <a-text value="Fechar" position="0 -0.38 0.02" align="center" width="2" color="#111"></a-text>
-        </a-entity>
 
       <!-- Exterior -->
-      <a-plane position="0 -0.1 -50" rotation="-90 0 0" width="150" height="300" color="#333" shadow="receive: true"></a-plane>
+      <a-plane position="0 -0.1 -50" rotation="-90 0 0" width="100" height="300" color="#333" shadow="receive: true"></a-plane>
       <a-plane position="-20 0 -50" rotation="-90 0 0" width="2" height="200" color="#fff"></a-plane>
       <a-plane position="-35 0 -50" rotation="-90 0 0" width="1" height="200" color="#fff"></a-plane>
       <a-box position="0 -0.05 34" width="20" height="0.1" depth="8" color="#7f8c8d"></a-box>
@@ -2143,9 +2247,9 @@ AFRAME.registerComponent("carry-system", {
 
       <a-box id="checkinDeskHit"
        class="clickable"
-       position="5.597 1.1 17.196"
-       rotation="0 180 0"
-       width="3.2" height="2.2" depth="2.0"
+       position="5.574 0.052 20.453"
+       rotation="0 90 0"
+       width="9.2" height="2.2" depth="3.0"
        material="opacity: 0; transparent: true"
        shadow="cast: false; receive: false"></a-box>
 
@@ -2159,7 +2263,7 @@ AFRAME.registerComponent("carry-system", {
         color="#8e44ad"
         material="opacity:0.85; transparent:true"></a-cylinder>
 
-      <a-text value="BAG DROP" position="3.6 0.981 17.721"  rotation="0 270 0"
+      <a-text value="BAG DROP" position="3.537 0.981 17.721"  rotation="0 270 0"
         align="center" width="4" color="#e9d7ff"></a-text>
 
 
@@ -2254,6 +2358,13 @@ AFRAME.registerComponent("carry-system", {
                 align="center" width="4" color="#b7f5d1"></a-text>
       </a-entity>
 
+      <a-box id="securityBarrier"
+       position="0 1.6 -0.3"
+       width="8" height="4" depth="1.2"
+       visible="false"
+       material="opacity: 0; transparent: true"></a-box>
+
+
       <!-- Leitor do cartão de embarque (mostrar BP) -->
       <a-box id="bpReader"
         position="4.066 1.3 1.843"
@@ -2308,24 +2419,32 @@ AFRAME.registerComponent("carry-system", {
            ========================= -->
 
 
-      <a-entity position="-4 1.5 -38" rotation="0 45 0">
-        <a-text value="PREVIEW: PARIS" align="center" position="0 1.3 0" color="#333" scale="1.5 1.5 1.5"></a-text>
-        <a-text value="(Clica para ver o destino)" align="center" position="0 1.1 0" color="#555" scale="0.8 0.8 0.8"></a-text>
+<a-text id="previewTitle"
+        value="PREVIEW: —"
+        align="center"
+        position="0 2.348 -39.125"
+        color="#333"
+        scale="1.5 1.5 1.5" face-camera></a-text>
 
-        <a-sphere class="clickable" 
-                  destination-preview
-                  radius="0.6" 
-                  color="#3498db" 
-                  material="opacity: 0.9; roughness: 0.2; metalness: 0.8"
-                  animation="property: position; dir: alternate; dur: 2000; easing: easeInOutSine; loop: true; to: 0 0.1 0">
-        </a-sphere>
-        
-        <a-cylinder radius="0.1" height="1" position="0 -1 0" color="#888"></a-cylinder>
-      </a-entity>
+<a-text id="previewHint"
+        value="(Click to see destination)"
+        align="center"
+        position="0 1.909 -39.160"
+        color="#555"
+        scale="0.8 0.8 0.8" face-camera></a-text>
+
+<a-sphere class="clickable"
+          destination-preview
+          position="0 0.962 -39.120"
+          radius="0.6"
+          color="#3498db"
+          material="opacity: 0.9; roughness: 0.2; metalness: 0.8">
+</a-sphere>
+
 
       <!-- Gate A1 -->
       <a-entity id="gateA1" position="-6 1 -44">
-        <a-box width="2.4" height="2.2" depth="0.12" color="#d8b88f"></a-box>
+        <a-box id="gateA1Box"width="2.4" height="2.2" depth="0.12" color="#d8b88f"></a-box>
         <a-text value="GATE A1" position="0 1.35 0.14" align="center" color="#111"></a-text>
 
         <!-- placa 3D do gate -->
@@ -2335,7 +2454,7 @@ AFRAME.registerComponent("carry-system", {
 
       <!-- Gate A2 -->
       <a-entity id="gateA2" position="0 1 -44">
-        <a-box width="2.4" height="2.2" depth="0.12" color="#d8b88f"></a-box>
+        <a-box id="gateA2Box" width="2.4" height="2.2" depth="0.12" color="#d8b88f"></a-box>
         <a-text value="GATE A2" position="0 1.35 0.14" align="center" color="#111"></a-text>
 
         <a-entity gltf-model="#modelo-gate-sign" position="0 2.8 0.6" rotation="0 0 0" scale="0.25 0.25 0.25"></a-entity>
@@ -2344,7 +2463,7 @@ AFRAME.registerComponent("carry-system", {
 
       <!-- Gate A3 -->
       <a-entity id="gateA3" position="6 1 -44">
-        <a-box width="2.4" height="2.2" depth="0.12" color="#d8b88f"></a-box>
+        <a-box id="gateA3Box" width="2.4" height="2.2" depth="0.12" color="#d8b88f"></a-box>
         <a-text value="GATE A3" position="0 1.35 0.14" align="center" color="#111"></a-text>
 
         <a-entity gltf-model="#modelo-gate-sign" position="0 2.8 0.6" rotation="0 0 0" scale="0.25 0.25 0.25"></a-entity>
