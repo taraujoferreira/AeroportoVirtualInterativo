@@ -56,7 +56,7 @@ AFRAME.registerComponent("wayfinding", {
       destination: null,
     };
 
-    // UI temporária do painel inicial 3D
+    // UI do painel inicial 3D
     this.ui = {
       mode: null,
       hasBackpack: true,
@@ -66,7 +66,7 @@ AFRAME.registerComponent("wayfinding", {
       luggageWeight: 0,
       onlineChecked: false,
 
-      desk: {            // ✅ ADICIONA ISTO
+      desk: {            
         code: "",
         bagChoice: "hand",
       },
@@ -875,6 +875,15 @@ bindDeskPanelButtons: function () {
   if (this._deskBound) return;
   this._deskBound = true;
 
+  // garante estrutura
+  this.ui = this.ui || {};
+  this.ui.desk = this.ui.desk || {
+  code: "",
+  bagChoice: null,
+  inputType: "reservation" // "reservation" | "document" | "flight"
+};
+
+
   const btnEnter = document.getElementById("uiDeskEnter");
   const btnHand = document.getElementById("uiDeskHand");
   const btnChecked = document.getElementById("uiDeskChecked");
@@ -883,19 +892,19 @@ bindDeskPanelButtons: function () {
 
   btnClose?.addEventListener("click", () => {
     document.getElementById("uiDeskPanel")?.setAttribute("visible", "false");
+    // se fechar, sai do modo typing também
+    this.setDeskTyping(false);
   });
 
-  // inserir dados (aqui continua a usar prompt, mas já dentro do painel 3D)
-  btnEnter?.addEventListener("click", () => {
-    const code = prompt("Enter data: reservation code / document / flight number:");
-    if (!code || code.trim().length < 4) {
-      this.ui.desk.code = "";
-      this.refreshDeskPanel("⚠️ Invalid data (min 4 chars).");
-      return;
-    }
-    this.ui.desk.code = code.trim();
-    this.refreshDeskPanel("");
-  });
+  // inserir dados (SEM prompt) — entra em modo de escrita
+btnEnter?.addEventListener("click", () => {
+  // limpa sempre o aviso anterior antes de entrar/sair do typing
+  this.refreshDeskPanel("");
+
+  // se estava a escrever, desliga; se não estava, liga
+  this.setDeskTyping(!this._deskTyping);
+});
+
 
   btnHand?.addEventListener("click", () => {
     this.ui.desk.bagChoice = "hand";
@@ -910,6 +919,161 @@ bindDeskPanelButtons: function () {
   btnConfirm?.addEventListener("click", () => this.confirmDeskPanel());
 },
 
+
+setDeskTyping: function (on) {
+  this._deskTyping = !!on;
+
+  // garante estrutura
+  this.ui = this.ui || {};
+  this.ui.desk = this.ui.desk || { code: "", bagChoice: null, inputType: "reservation" };
+  if (!this.ui.desk.inputType) this.ui.desk.inputType = "reservation";
+
+  // bind do teclado 1x
+  if (!this._deskKeyBound) {
+    this._deskKeyBound = true;
+
+    window.addEventListener("keydown", (e) => {
+      const panel = document.getElementById("uiDeskPanel");
+      const visible = panel?.getAttribute("visible");
+      const isVisible = (visible === true || visible === "true");
+
+      // só processa se estiver em typing + painel visível
+      if (!this._deskTyping || !isVisible) return;
+
+      const inputType = this.ui.desk.inputType || "reservation";
+
+      const help =
+        inputType === "flight"
+          ? { title: "Número de voo (companhia + números)", examples: ["TP1234", "FR4501"] }
+          : inputType === "document"
+          ? { title: "Nº de documento (CC/Passaporte)", examples: ["PT12345678", "AA1234567"] }
+          : { title: "Código de reserva (booking reference)", examples: ["AB12CD", "X7K9P2"] };
+
+      // --- ESC: sair sem deixar mensagens presas ---
+      if (e.key === "Escape") {
+        this._deskTyping = false;
+        this.refreshDeskPanel(""); // limpa hint/avisos
+        return;
+      }
+
+      // --- ENTER: validar e guardar ---
+      if (e.key === "Enter") {
+        let raw = (this.ui.desk.code || "").trim();
+        raw = raw.replace(/\s+/g, "");
+
+        let ok = raw.length >= 4;
+
+        if (inputType === "flight") {
+          ok = /^[A-Z]{1,3}\d{2,6}$/i.test(raw);
+        } else if (inputType === "reservation") {
+          ok = /^[A-Z0-9]{5,8}$/i.test(raw);
+        } else if (inputType === "document") {
+          ok = /^[A-Z0-9\/\-_.]{6,}$/i.test(raw);
+        }
+
+        if (!ok) {
+          this.ui.desk.code = "";
+          this.refreshDeskPanel(
+            `⚠️ Formato inválido.\n${help.title}\nEx: ${help.examples.join(" · ")}`
+          );
+          return;
+        }
+
+        this.ui.desk.code = raw.toUpperCase();
+        this._deskTyping = false;
+        this.refreshDeskPanel("✅ Dados guardados.");
+        return;
+      }
+
+      // --- BACKSPACE ---
+      if (e.key === "Backspace") {
+        e.preventDefault();
+        this.ui.desk.code = (this.ui.desk.code || "").slice(0, -1);
+        this.refreshDeskPanel(""); // deixa o refresh mostrar cursor/placeholder
+        return;
+      }
+
+      // --- permitir colar (Ctrl+V / Cmd+V) ---
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
+        setTimeout(async () => {
+          try {
+            const text = await navigator.clipboard.readText();
+            const cleaned = (text || "").trim().replace(/\s+/g, "");
+            if (!cleaned) return;
+
+            const filtered = cleaned.replace(/[^A-Z0-9\/\-_.]/gi, "");
+            const maxLen = 14;
+
+            this.ui.desk.code = filtered.slice(0, maxLen).toUpperCase();
+            this.refreshDeskPanel("");
+          } catch (_) {}
+        }, 0);
+        return;
+      }
+
+      // bloqueia outros atalhos do browser
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      // aceitar letras/números e símbolos comuns (inclui /)
+      const k = e.key;
+      if (!/^[a-z0-9\/\-_.]$/i.test(k)) return;
+
+      const maxLen = 14;
+      const cur = (this.ui.desk.code || "");
+      if (cur.length >= maxLen) return;
+
+      this.ui.desk.code = (cur + k).toUpperCase();
+      this.refreshDeskPanel("");
+    });
+  }
+
+  // Sempre que alterna typing, limpa primeiro para não ficar texto antigo
+  this.refreshDeskPanel("");
+
+  // Hint curto e só quando liga o typing
+  if (this._deskTyping) {
+    // usa a tua função se existir; senão faz fallback
+    const help = (this.getDeskInputHelp && this.getDeskInputHelp()) || {
+      title: "Código de reserva",
+      examples: ["AB12CD", "X7K9P2"]
+    };
+
+    // curto e claro (não mete Backspace, isso é óbvio)
+    this.refreshDeskPanel(`Ex: ${help.examples.join(" · ")}\nEnter = guardar · Esc = cancelar`);
+  }
+},
+
+getDeskInputHelp: function () {
+  const t = (this.ui?.desk?.inputType || "reservation");
+
+  if (t === "document") {
+    return {
+      title: "Introduz nº de documento (passaporte/CC) — sem espaços se possível.",
+      examples: ["PT12345678", "AA1234567"]
+    };
+  }
+
+  if (t === "flight") {
+    return {
+      title: "Introduz nº de voo (companhia + números).",
+      examples: ["TP1234", "FR4501"]
+    };
+  }
+
+  // default: reservation / booking reference
+  return {
+    title: "Introduz código de reserva (Booking reference).",
+    examples: ["AB12CD", "X7K9P2"]
+  };
+},
+
+
+toggleDeskTyping: function () {
+  this.setDeskTyping(!this._deskTyping);
+},
+
+
+
 refreshDeskPanel: function (forceWarn = "") {
   const codeTxt = document.getElementById("uiDeskCode");
   const warnTxt = document.getElementById("uiDeskWarn");
@@ -919,15 +1083,49 @@ refreshDeskPanel: function (forceWarn = "") {
   const btnHand = document.getElementById("uiDeskHand");
   const btnChecked = document.getElementById("uiDeskChecked");
 
-  if (codeTxt) {
-    codeTxt.setAttribute("value", `Code: ${this.ui.desk.code ? this.ui.desk.code : "(empty)"}`);
+  // --- UX helpers (o que inserir + exemplos) ---
+  const typing = !!this._deskTyping;
+  const inputType = this.ui?.desk?.inputType || "reservation";
+
+  const help =
+    inputType === "flight"
+      ? { label: "Flight number", example: "TP1234 / FR4501", placeholder: "TP1234" }
+      : inputType === "document"
+      ? { label: "Document", example: "PT12345678 / AA1234567", placeholder: "PT12345678" }
+      : { label: "Reservation code", example: "AB12CD / X7K9P2", placeholder: "AB12CD" };
+
+  // --- Campo Code (com placeholder + cursor) ---
+  const rawCode = (this.ui?.desk?.code || "").trim();
+
+  let codeLine = "";
+  if (rawCode) {
+    // mostra cursor quando está a escrever
+    codeLine = rawCode
+  ? `${rawCode}${typing ? "▌" : ""}`
+  : typing
+    ? `— (ex: ${help.placeholder}) ▌`
+    : `(empty)`;
+
+  } else {
+    // vazio: mostra instrução/placeholder diferente consoante typing
+    codeLine = typing
+      ? `Code (${help.label}): — (ex: ${help.placeholder}) ▌`
+      : `Code (${help.label}): (click "Enter data")`;
   }
+
+  if (codeTxt) codeTxt.setAttribute("value", codeLine);
 
   // regra: se mochila > 10kg força porão
   const forcedBackpack = this.state.items?.backpack && (this.state.handWeight || 0) > 10;
   const forcedWarn = forcedBackpack ? "⚠️ Backpack > 10kg: hold mandatory." : "";
 
-  const warn = forceWarn || forcedWarn || "";
+  // mensagem: prioridade -> forceWarn (ex: validação) -> forcedWarn -> (se typing, hint) -> ""
+  const typingHint = typing
+  ? `Ex: ${help.example}\nEnter = guardar · Esc = cancelar`
+  : "";
+
+
+  const warn = forceWarn || forcedWarn || typingHint || "";
   if (warnTxt) warnTxt.setAttribute("value", warn);
 
   // se forçado, sobrepõe escolha
@@ -947,6 +1145,7 @@ refreshDeskPanel: function (forceWarn = "") {
   btnHand?.setAttribute("color", isHand ? ACTIVE : INACTIVE);
   btnChecked?.setAttribute("color", isChecked ? ACTIVE : INACTIVE);
 },
+
 
 confirmDeskPanel: function () {
   // valida dados
@@ -1431,10 +1630,10 @@ refreshInventoryPanel: function () {
   const NEUTRAL = "#2c3e50"; // fallback
 
   const line = (id, label) => {
-    if (!this.exists[id]) return `${label}: (não existe)`;
+    if (!this.exists[id]) return `${label}: (does not exist)`;
     return this.inventory[id]
-      ? `${label}: ✅ no inventário (clicar para remover)`
-      : `${label}: ⛔ fora (clicar para adicionar)`;
+      ? `${label}: ✅ in inventory (click to remove)`
+      : `${label}: ⛔ out (click to add)`;
   };
 
   // textos
@@ -1539,6 +1738,7 @@ window.addEventListener("DOMContentLoaded", () => {
   <div id="app">
     <div id="hud">
       <b>VR Airport</b><br />WASD • Mouse • Click<br/><br/>
+      <span>Toggle I to open Inventory</span><br>
       <br/><span id="hudTarget">Enter the airport and check in.</span>
     </div>
 
@@ -1588,7 +1788,7 @@ window.addEventListener("DOMContentLoaded", () => {
        crossorigin="anonymous"></audio>
 
         <audio id="successClip"
-              src="https://cdn.pixabay.com/download/audio/2021/08/04/audio_0625c153e1.mp3"
+              src="assets/audio/soundSuccess.mp3"
               preload="auto"
               crossorigin="anonymous"></audio>
 
@@ -2035,9 +2235,9 @@ window.addEventListener("DOMContentLoaded", () => {
           value=""
           position="0 -0.498 0.01"
           align="center"
-          width="2.35"
-          wrap-count="34"
-          color="#ffcc66"></a-text>
+          width="2.2"
+          wrap-count="32"
+          color="#cccccc"></a-text>
 
   <!-- confirmar / fechar -->
   <a-plane id="uiDeskConfirm" class="clickable"
